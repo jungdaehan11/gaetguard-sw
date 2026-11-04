@@ -33,6 +33,8 @@ def load(path):
             if k in r:
                 r[k] = None if r[k] in ("", "None") else float(r[k])
     meta = json.load(open(path.replace(".csv", "_path.json"), encoding="utf-8"))
+    if meta.get("version") != "v4":
+        sys.exit(f"{path} 는 v4 기록이 아닙니다 (v3 이하). v3 기록은 python gg_plot_v3.py {path} 로 그리세요.")
     return rows, meta
 
 
