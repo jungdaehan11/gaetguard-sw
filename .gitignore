@@ -1,0 +1,8 @@
+# 비행 기록 (실행할 때마다 생김)
+gg_log_*.csv
+gg_log_*_path.json
+gg_log_*.png
+__pycache__/
+*.pyc
+# 기체 설정 백업은 관리자 허락 전 올리지 않음
+*.param
