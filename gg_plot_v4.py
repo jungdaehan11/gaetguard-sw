@@ -33,7 +33,7 @@ def load(path):
             if k in r:
                 r[k] = None if r[k] in ("", "None") else float(r[k])
     meta = json.load(open(path.replace(".csv", "_path.json"), encoding="utf-8"))
-    if meta.get("version") != "v4":
+    if not str(meta.get("version", "")).startswith("v4"):
         sys.exit(f"{path} 는 v4 기록이 아닙니다 (v3 이하). v3 기록은 python gg_plot_v3.py {path} 로 그리세요.")
     return rows, meta
 
@@ -75,7 +75,7 @@ def main(path):
     pts = meta["path"]
     total = sum(math.dist(a, b) for a, b in zip(pts, pts[1:]))
     fig = plt.figure(figsize=(15, 9.2), facecolor="white")
-    fig.text(0.04, 0.955, "갯가드 빛길 안내 v4 · 빛 자국을 사람 3m 앞 길 위에", fontsize=18, weight="bold", color=INK)
+    fig.text(0.04, 0.955, f"갯가드 빛길 안내 {meta.get('version', 'v4')} · 빛 자국을 사람 3m 앞 길 위에", fontsize=18, weight="bold", color=INK)
     fig.text(0.04, 0.935, f"가상의 사람이 꺾인 길 {total:.0f}m를 걸음 · 고도 {meta['alt']:.0f}m · LED {meta['led_tilt']:.0f}° 기울임 "
              f"→ 빛 자국은 드론 앞 {meta['r_spot']:.1f}m\n끝난 이유: {meta['end_reason']}",
              fontsize=11.5, color=INK2, va="top", linespacing=1.5)
@@ -95,7 +95,7 @@ def main(path):
     ax.annotate("도착(육지·피난 지점 가정)", (pts[-1][1], pts[-1][0]), xytext=(-10, 8), textcoords="offset points",
                 fontsize=11, color=INK, ha="right")
     for k, (n, e) in enumerate(pts[1:-1]):
-        ax.annotate(f"모퉁이 {k + 1}\n깜빡임 → 멈춤 → 드론이 돎", (e, n), xytext=(-12, 14) if k % 2 == 0 else (12, -34),
+        ax.annotate(f"모퉁이 {k + 1}\n깜빡임 → 멈춤 → 새 길로", (e, n), xytext=(-12, 14) if k % 2 == 0 else (12, -34),
                     textcoords="offset points", fontsize=10.5, color=INK, ha="right" if k % 2 == 0 else "left")
     off = [r for r in rows if r["phase"] == "길 이탈"]
     if off:

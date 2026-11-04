@@ -1,4 +1,16 @@
-"""갯가드 빛길 안내 v4 — 빛 자국을 늘 "사람 3m 앞 길 위"에 찍기 (시뮬레이터 시험용)
+"""갯가드 빛길 안내 v4.1 — 빛 자국을 늘 "사람 3m 앞 길 위"에 찍기, 드론도 길을 따라 ㄱ자로 (시뮬레이터 시험용)
+
+v4.1에서 바뀐 점 (2026-11-04)
+  - 모퉁이에서 원호로 돌지 않음. 드론도 길을 따라 ㄱ자로 감
+  - 규칙: LED가 고정이라 빛 자국은 늘 드론에서 R_SPOT(약 4.9m) 떨어진 곳에 떨어짐
+         → 드론 자리 = 빛 자국에서 직선거리 4.9m인 곳
+         → 곧은 길: 빛 자국에서 길 따라 4.9m 앞
+         → 모퉁이 4.9m 안: 빛 자국 둘레 4.9m 원 위에서 새 길 쪽으로 고르게 돌림
+           (꺾인 새 길 위에 딱 맞추면 기수가 순간적으로 초당 30° 넘게 돌아야 해서 실기체 제한 20°에 걸림
+            → 고르게 돌리면 초당 약 9°, 대신 드론이 길에서 최대 약 1m 바깥으로 살짝 둥글게 돎)
+  - 모퉁이: 빛 자국이 모퉁이에 고정 + 깜빡임 → 사람이 와서 멈춤(1초) → 바로 켜짐,
+           드론이 새 길로 나가며 빛 자국이 꺾인 길 위로 앞서감 → 사람이 따라옴
+  - 모퉁이 바깥 빈 공간 필요 없음
 
 v3에서 바뀐 점 (팀 결정 2026-11-04)
   - "좌우 쓸기"를 뺌 → 빛 신호는 2가지
@@ -7,12 +19,10 @@ v3에서 바뀐 점 (팀 결정 2026-11-04)
   - 곧은 길: 빛 자국이 사람 3m 앞 길 위를 같이 감
   - 꺾이는 곳: ① 빛 자국이 모퉁이에 닿으면 거기 고정하고 깜빡임
               ② 사람이 모퉁이에 와서 멈추면
-              ③ 드론이 모퉁이를 돌아(사람과 거리를 두고 원호로) 빛 자국을 꺾인 길 3m 지점으로 옮김
-              ④ 다시 켜짐 → 사람이 방향을 틀어 따라옴
+              ③ 다시 켜짐, 빛 자국이 꺾인 길 위로 앞서감 → 사람이 방향을 틀어 따라옴
   - 길 이탈(2m 넘게 벗어남): 빛 자국을 그 자리에 두고 깜빡임 → 사람이 빛 자국(길 위)으로 돌아옴
   - LED는 앞으로 35° 기울여 고정했다고 가정 → 고도 7m에서 빛 자국은 드론 앞 약 4.9m
-    드론은 빛 자국에서 4.9m 앞(진행 방향)에 떠서 빛 자국을 바라봄
-    (모퉁이에서는 원래 방향으로 4.9m 더 나가 있음 → 모퉁이 바깥쪽 약 5m 빈 공간 필요)
+    드론은 빛 자국에서 직선거리 4.9m인 길 위 점에 떠서 빛 자국을 바라봄
   - v3 안전장치 그대로: 하트비트 255번 / 모드 바뀌면 명령 멈춤 / Ctrl+C = BRAKE / 소프트웨어 울타리 /
     실기체 연결이면 비행 막음(--real) / 시동 꺼질 때까지 하트비트 유지 / --light-test
 
@@ -64,13 +74,14 @@ PATH = [(0.0, 0.0), (25.0, 0.0), (25.0, 15.0), (40.0, 15.0)]
 REST_S, REST_LEN = 10.0, 8.0      # 10m 지점에서 8초 쉼 → 빛 자국·드론도 기다리는지
 DRIFT_S = 44.0                    # 44m 지점(마지막 곧은 길)에서 옆으로 벗어나기 시작 → 깜빡임이 켜지는지
 DRIFT_SPEED = 0.3                 # 벗어나는 속도 (m/s, 옆으로)
+REACTION = 1.0                    # 깜빡임 → 켜짐을 보고 다시 걷기 시작할 때까지 (s) [가정]
 
 # SET_POSITION_TARGET_LOCAL_NED: 위치 + 속도 + 방향(yaw) 사용, 가속도·회전속도 무시
 POS_VEL_YAW = 0b0000100111000000
 
 ON, BLINK, OFF = "켜짐", "깜빡임", "꺼짐"
 MEANING = {ON: "따라오세요", BLINK: "빛 자국까지 와서 멈추세요", OFF: "-"}
-FOLLOW, HOLD, TURN, OFFPATH_P, ARRIVED = "따라가기", "모퉁이 대기", "모퉁이 돌기", "길 이탈", "도착"
+FOLLOW, HOLD, OFFPATH_P, ARRIVED = "따라가기", "모퉁이 대기", "길 이탈", "도착"
 
 
 # ───────── 길 계산 ─────────
@@ -99,6 +110,74 @@ class Path:
                 return (n1 + u[0] * k, e1 + u[1] * k), u
         raise ValueError
 
+    def point_ext(self, s):
+        """길 밖으로도 곧게 연장 (출발 전은 첫 방향, 도착 뒤는 끝 방향)"""
+        if s > self.length:
+            (n, e), u = self.point(self.length)
+            k = s - self.length
+            return (n + u[0] * k, e + u[1] * k), u
+        if s < 0:
+            (n, e), u = self.point(0.0)
+            return (n + u[0] * s, e + u[1] * s), u
+        return self.point(s)
+
+    def ahead(self, s0, r):
+        """s0 점에서 길을 따라 앞으로 가다가 s0 점과 직선거리가 처음 r이 되는 곳의 길 위 거리"""
+        p0, _ = self.point_ext(s0)
+        s = s0
+        while math.dist(self.point_ext(s + 0.1)[0], p0) < r:
+            s += 0.1
+            if s - s0 > 4 * r + 50:
+                return s0 + r
+        lo, hi = s, s + 0.1
+        for _ in range(30):
+            mid = (lo + hi) / 2
+            if math.dist(self.point_ext(mid)[0], p0) >= r:
+                hi = mid
+            else:
+                lo = mid
+        return hi
+
+    def drone_spot(self, s_spot, r):
+        """빛 자국이 s_spot일 때 드론이 떠 있을 곳 (빛 자국에서 직선거리 r).
+        곧은 길: 빛 자국에서 길 따라 r 앞.
+        모퉁이 r 안쪽: 빛 자국을 중심으로 반지름 r 원 위에서 들어오는 방향 → 나가는 방향으로
+        빛 자국이 모퉁이에 다가가는 만큼 고르게 돌림 → 기수 회전이 초당 약 9°로 고르게 (실기체 제한 20°)
+        드론은 길에서 최대 약 1m 바깥으로 살짝 둥글게 돎"""
+        P, _ = self.point(s_spot)
+        for i, c in enumerate(self.corners):
+            y = c - s_spot
+            if 0.0 <= y < r:
+                u_in, u_out = self.seg_dir(i), self.seg_dir(i + 1)
+                phi = math.atan2(u_in[0] * u_out[1] - u_in[1] * u_out[0], u_in[0] * u_out[0] + u_in[1] * u_out[1])
+                th = phi * (1.0 - y / r)
+                c_, s_ = math.cos(th), math.sin(th)
+                d = (u_in[0] * c_ - u_in[1] * s_, u_in[0] * s_ + u_in[1] * c_)
+                return (P[0] + r * d[0], P[1] + r * d[1])
+        return self.point_ext(self.ahead(s_spot, r))[0]
+
+    def aim_s(self, d, r, s_ref, span=6.0):
+        """점 d에서 직선거리 r인 길 위 점들 중 s_ref에 가장 가까운 것의 길 위 거리 (없으면 None)"""
+        f = lambda x: math.dist(self.point_ext(x)[0], d) - r
+        best = None
+        x, prev = s_ref - span, f(s_ref - span)
+        while x < s_ref + span:
+            x2 = x + 0.1
+            cur = f(x2)
+            if prev * cur <= 0:
+                lo, hi = x, x2
+                for _ in range(25):
+                    mid = (lo + hi) / 2
+                    if f(lo) * f(mid) <= 0:
+                        hi = mid
+                    else:
+                        lo = mid
+                root = (lo + hi) / 2
+                if best is None or abs(root - s_ref) < abs(best - s_ref):
+                    best = root
+            x, prev = x2, cur
+        return best
+
     def project(self, p):
         """점 p를 길에 투영 → (길 위 거리 s, 옆으로 벗어난 거리 d, +는 진행 방향 오른쪽)"""
         best = None
@@ -113,34 +192,6 @@ class Path:
             if best is None or dist < best[1] - 1e-9:
                 best = (self.cum[i] + k, dist, 1.0 if side >= 0 else -1.0)
         return best[0], best[1] * best[2]
-
-
-def rot(v, a):
-    c, s = math.cos(a), math.sin(a)
-    return v[0] * c - v[1] * s, v[0] * s + v[1] * c
-
-
-class CornerTurn:
-    """모퉁이 돌기: 드론이 모퉁이(사람 서 있는 곳)를 중심으로 원호를 그리며
-    (반지름 R_SPOT → R_SPOT+SPOT_AHEAD) 들어오는 방향에서 나가는 방향으로 옮겨 감"""
-    def __init__(self, corner_pt, u_in, u_out):
-        self.c, self.u_in = corner_pt, u_in
-        self.phi = math.atan2(u_in[0] * u_out[1] - u_in[1] * u_out[0], u_in[0] * u_out[0] + u_in[1] * u_out[1])
-        self.tau = 0.0
-        pts = [self.pos(k / 40) for k in range(41)]
-        self.length = sum(math.dist(a, b) for a, b in zip(pts, pts[1:]))
-
-    def pos(self, tau):
-        r = R_SPOT + tau * SPOT_AHEAD
-        d = rot(self.u_in, tau * self.phi)
-        return self.c[0] + r * d[0], self.c[1] + r * d[1]
-
-    def step(self, dt):
-        """(목표 위치, 속도, 끝났나)"""
-        p0 = self.pos(self.tau)
-        self.tau = min(1.0, self.tau + MAX_SPEED * dt / self.length)
-        p1 = self.pos(self.tau)
-        return p1, ((p1[0] - p0[0]) / dt, (p1[1] - p0[1]) / dt), self.tau >= 1.0
 
 
 # ───────── 가상의 사람 (시뮬레이터 시험용) ─────────
@@ -158,6 +209,12 @@ class VirtualPerson:
         s, d = self.path.project(self.p)
         if s >= self.path.length - 0.3 and abs(d) < OFFPATH_BACK:
             self.state = "도착"
+            return
+        if getattr(self, "last_signal", None) == BLINK and signal == ON:
+            self.go_at = t + REACTION
+        self.last_signal = signal
+        if signal == ON and t < getattr(self, "go_at", 0.0):
+            self.state = "멈춤(반응 중)"
             return
         if signal == BLINK:
             if abs(d) > OFFPATH_M * 0.5:
@@ -384,14 +441,14 @@ def fly(veh, log_path):
     path = Path(PATH)
     if not takeoff(veh):
         return
-    # 출발 배치: 사람은 길 출발점, 빛 자국은 3m 앞, 드론은 빛 자국에서 R_SPOT 앞 = 이륙한 자리
-    (sn, se), u0 = path.point(SPOT_AHEAD)
-    n0, e0 = veh.ned[0] - (sn + u0[0] * R_SPOT), veh.ned[1] - (se + u0[1] * R_SPOT)
+    # 출발 배치: 사람은 길 출발점, 빛 자국은 3m 앞, 드론은 빛 자국에서 직선 R_SPOT 앞 = 이륙한 자리
+    (sn, se), _ = path.point(SPOT_AHEAD)
+    cmd = path.drone_spot(SPOT_AHEAD, R_SPOT)
+    n0, e0 = veh.ned[0] - cmd[0], veh.ned[1] - cmd[1]
     print(f"이륙 완료 ({veh.rel_alt:.1f}m) → 안내 시작. 길 {path.length:.0f}m, 꺾이는 곳 {len(path.corners)}개. "
-          f"사람은 이륙 자리 {SPOT_AHEAD + R_SPOT:.1f}m 뒤에서 출발, 빛 자국은 드론 앞 {R_SPOT:.1f}m")
+          f"사람은 이륙 자리 {math.dist(cmd, path.pts[0]):.1f}m 뒤에서 출발, 빛 자국은 드론 앞 {R_SPOT:.1f}m")
 
     # 준비: 드론이 빛 자국(사람 쪽)을 바라볼 때까지 제자리에서 돎 → 그 뒤에 사람 출발
-    cmd = (sn + u0[0] * R_SPOT, se + u0[1] * R_SPOT)
     yaw0 = math.atan2(se - cmd[1], sn - cmd[0])
     t_end = time.time() + 20
     print("준비: 드론이 사람 쪽으로 도는 중...")
@@ -411,7 +468,6 @@ def fly(veh, log_path):
     s_spot = SPOT_AHEAD
     done_corners = set()
     phase = FOLLOW
-    turn = None
     stop_since = None
     hist = collections.deque()
     events = []
@@ -451,7 +507,7 @@ def fly(veh, log_path):
             gap = math.hypot(dn - pn, de - pe)
 
             # ── 단계 정하기 ──
-            if phase != OFFPATH_P and abs(d_p) > OFFPATH_M and phase != TURN:
+            if phase != OFFPATH_P and abs(d_p) > OFFPATH_M:
                 prev_phase = phase
                 phase = OFFPATH_P
                 events.append((t, "길 이탈", round(abs(d_p), 2)))
@@ -467,7 +523,8 @@ def fly(veh, log_path):
                 want = s_p + SPOT_AHEAD
                 if gap > MAX_GAP:
                     want = s_spot                     # 너무 멀면 기다림
-                s_spot = max(s_spot, min(want, path.length))
+                # 빛 자국은 앞으로만, 초당 MAX_SPEED보다 빨리 안 감 (모퉁이 출발 때 갑자기 튀지 않게)
+                s_spot = min(s_spot + MAX_SPEED * dt, max(s_spot, min(want, path.length)))
                 if next_c is not None and s_spot >= next_c:
                     s_spot = next_c
                     phase = HOLD
@@ -482,40 +539,36 @@ def fly(veh, log_path):
                 if at_corner and speed < STOP_SPEED:
                     stop_since = stop_since or now
                     if now - stop_since >= STOP_CONFIRM:
-                        i = path.corners.index(next_c)
-                        turn = CornerTurn(c_pt, path.seg_dir(i), path.seg_dir(i + 1))
-                        phase = TURN
-                        events.append((t, "모퉁이 돌기 시작", next_c))
-                        print(f"  → 사람이 모퉁이에서 멈춤: 드론이 모퉁이를 돎 (약 {turn.length:.1f}m)")
+                        done_corners.add(next_c)
+                        phase = FOLLOW
+                        events.append((t, "모퉁이 출발", next_c))
+                        print("  → 사람이 모퉁이에서 멈춤: 다시 켜짐, 빛 자국이 꺾인 길로 앞서감")
                 else:
                     stop_since = None
 
             # ── 빛 자국 목표점 · 드론 목표 ──
+            # 드론 자리 = 빛 자국에서 직선거리 R_SPOT (곧은 길: 길 따라 앞, 모퉁이: 새 길 쪽으로 고르게 돌림)
+            spot_pt, _ = path.point(s_spot)
+            goal = path.drone_spot(s_spot, R_SPOT)
+            if phase == ARRIVED:                 # 도착: 사람과 거리를 더 두고 내림
+                goal, _ = path.point_ext(path.length + R_SPOT + SPOT_AHEAD)
             vel = (0.0, 0.0)
-            if phase == TURN:
-                goal, vel, finished = turn.step(dt)
-                cmd = goal
-                c_pt = turn.c
-                aim = c_pt                       # 도는 동안 모퉁이(사람 선 곳)를 비춤
-                spot_pt = c_pt
-                if finished:
-                    done_corners.add(next_c)
-                    s_spot = next_c + SPOT_AHEAD
-                    phase = FOLLOW
-                    events.append((t, "모퉁이 돌기 끝", next_c))
-                    print("  → 모퉁이 돌기 끝: 빛 자국을 꺾인 길 3m 지점에, 다시 켜짐")
-            if phase != TURN:
-                spot_pt, u = path.point(s_spot)
-                goal = (spot_pt[0] + u[0] * R_SPOT, spot_pt[1] + u[1] * R_SPOT)
-                if phase == ARRIVED:             # 도착: 사람과 거리를 더 두고 내림
-                    goal = (goal[0] + u[0] * SPOT_AHEAD, goal[1] + u[1] * SPOT_AHEAD)
-                dx, dy = goal[0] - cmd[0], goal[1] - cmd[1]
-                dist = math.hypot(dx, dy)
-                step = min(dist, MAX_SPEED * dt)
-                if dist > 1e-6:
-                    cmd = (cmd[0] + dx / dist * step, cmd[1] + dy / dist * step)
-                    vel = (dx / dist * step / dt, dy / dist * step / dt)
-                aim = spot_pt
+            dx, dy = goal[0] - cmd[0], goal[1] - cmd[1]
+            dist = math.hypot(dx, dy)
+            step = min(dist, MAX_SPEED * dt)
+            if dist > 1e-6:
+                cmd = (cmd[0] + dx / dist * step, cmd[1] + dy / dist * step)
+                vel = (dx / dist * step / dt, dy / dist * step / dt)
+            # 바라볼 곳: 보통은 빛 자국 목표점.
+            # 드론이 목표보다 많이 늦어 빛 자국 거리가 0.5m 넘게 어긋나면(모퉁이에서 다시 출발할 때 등)
+            # 지금 자리·고도에서 빛 자국이 실제로 떨어질 길 위 점을 바라봄 → 빛 자국이 길 밖으로 안 나감
+            alt_now = veh.rel_alt if veh.rel_alt is not None else ALT
+            r_now = max(alt_now, 0.5) * math.tan(math.radians(LED_TILT_DEG))
+            aim = spot_pt
+            if abs(math.dist((dn, de), spot_pt) - r_now) > 0.5:
+                s_aim = path.aim_s((dn, de), r_now, s_spot)
+                if s_aim is not None:
+                    aim = path.point_ext(s_aim)[0]
             if math.hypot(*cmd) > MAX_RANGE:     # 소프트웨어 울타리
                 print("! 울타리(MAX_RANGE) 밖 목표 → 기다림")
                 cmd = (dn, de)
@@ -572,7 +625,7 @@ def fly(veh, log_path):
             w.writeheader()
             w.writerows(rows)
         with open(log_path.replace(".csv", "_path.json"), "w", encoding="utf-8") as f:
-            json.dump(dict(version="v4", path=PATH, offpath_m=OFFPATH_M, spot_ahead=SPOT_AHEAD, alt=ALT,
+            json.dump(dict(version="v4.1", path=PATH, offpath_m=OFFPATH_M, spot_ahead=SPOT_AHEAD, alt=ALT,
                            r_spot=round(R_SPOT, 2), led_tilt=LED_TILT_DEG, corners=path.corners,
                            events=events, end_reason=end_reason), f, ensure_ascii=False)
         summary(rows, events, light, veh, end_reason, log_path)
@@ -596,14 +649,14 @@ def summary(rows, events, light, veh, end_reason, log_path):
         print(f"빛 자국 (모퉁이 대기 중): 모퉁이에서 최대 {max(r['spot_err'] for r in hold):.2f}m")
     starts = [e for e in events if e[1] == "모퉁이 대기 시작"]
     for k, e in enumerate(starts):
-        t_turn = next((x[0] for x in events if x[1] == "모퉁이 돌기 시작" and x[2] == e[2]), None)
-        t_end = next((x[0] for x in events if x[1] == "모퉁이 돌기 끝" and x[2] == e[2]), None)
-        if t_turn and t_end:
-            print(f"모퉁이 {k + 1}: 깜빡임 {e[0]:.1f}초 → 사람 멈춤 확인 {t_turn:.1f}초 → 돌기 끝 {t_end:.1f}초 "
-                  f"(사람이 서서 기다린 시간 약 {t_end - t_turn + STOP_CONFIRM:.1f}초)")
-    turn_gap = [r["gap"] for r in rows if r["phase"] == TURN]
-    if turn_gap:
-        print(f"모퉁이 도는 동안 사람-드론 거리 최소 {min(turn_gap):.1f}m")
+        t_go = next((x[0] for x in events if x[1] == "모퉁이 출발" and x[2] == e[2]), None)
+        stood = [r["t"] for r in rows if r["phase"] == HOLD and r["person_state"] == "멈춤" and e[0] <= r["t"] <= (t_go or 1e9)]
+        if t_go:
+            print(f"모퉁이 {k + 1}: 깜빡임 {e[0]:.1f}초 → 다시 켜짐 {t_go:.1f}초"
+                  + (f" (사람이 모퉁이에 서 있던 시간 약 {t_go - stood[0]:.1f}초)" if stood else ""))
+    hold_gap = [r["gap"] for r in rows if r["phase"] == HOLD]
+    if hold_gap:
+        print(f"모퉁이 대기 중 사람-드론 거리 최소 {min(hold_gap):.1f}m")
     off_ev = next((e for e in events if e[1] == "길 이탈"), None)
     drift = next((r for r in rows if r["person_state"].startswith("걷는 중(길 벗어나")), None)
     if off_ev and drift:
@@ -615,7 +668,7 @@ def summary(rows, events, light, veh, end_reason, log_path):
 
 
 def main():
-    ap = argparse.ArgumentParser(description="갯가드 빛길 안내 v4")
+    ap = argparse.ArgumentParser(description="갯가드 빛길 안내 v4.1")
     ap.add_argument("addr", nargs="?", default="tcp:127.0.0.1:5762")
     ap.add_argument("--baud", type=int, default=115200)
     ap.add_argument("--light-test", action="store_true", help="시동 없이 빛(릴레이)만 시험")
@@ -627,7 +680,7 @@ def main():
         return
     if a.real and not a.light_test:
         print("실기체 비행 전 확인: 배터리·지상국 안전 설정 수정 / 관리자 허락 / 안전 조종자 조종기 대기(스로틀 가운데) / "
-              "비행 구역 사람 통제 / 모퉁이 바깥 5m 빈 공간 / 비행승인 여부 [법규 확인: 항공안전법 제127조]")
+              "비행 구역 사람 통제 / 비행승인 여부 [법규 확인: 항공안전법 제127조]")
         if input("모두 확인했으면 '비행' 입력: ").strip() != "비행":
             print("취소했습니다.")
             return
