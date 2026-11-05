@@ -13,7 +13,7 @@
      → 오차를 물이 찰 때 / 빠질 때 / 정조(물 멈춤 근처)로 나눠 보고, 물이 찰 때는 "분" 단위로도 봄
 
 실행: python gg_tide_correction_test.py tide\\station_DT_0052_1m.csv   (numpy, matplotlib 필요)
-결과: 화면 요약 + 같은 이름_보정시험.png / _보정시험.csv
+결과: 화면 요약 + 같은 이름_보정시험.png / _보정시험.csv / _보정시험_구분별.csv (계절·밤낮별)
 """
 import csv
 import os
@@ -70,6 +70,16 @@ def despike(O, P, lim=30.0):
     with np.errstate(invalid="ignore"):
         med = np.nanmedian(nb, axis=0)
         bad = (np.abs(O - med) > lim) | ((O == 0) & (P > 100))
+    # 센서 멈춤: 예측이 10cm 넘게 움직이는 동안 실측이 20분 넘게 같은 값
+    same = np.r_[False, (O[1:] == O[:-1]) & ~np.isnan(O[1:])]
+    start = None
+    for i, v in enumerate(np.r_[same, False]):
+        if v and start is None:
+            start = i - 1
+        elif not v and start is not None:
+            if i - start >= 20 and np.nanmax(P[start:i]) - np.nanmin(P[start:i]) > 10:
+                bad[start:i] = True
+            start = None
     O = O.copy()
     O[bad] = np.nan
     return O, int(bad.sum())
@@ -161,12 +171,27 @@ def P_at(P, idx):
     return out
 
 
+def sun_elev(T, lat, lon):
+    """해 고도(도). T는 한국 시각 datetime64. 간단식(NOAA 근사, 오차 1분 안팎 수준)"""
+    utc = (T - np.timedelta64(9, "h")).astype("datetime64[s]")
+    d = (utc - np.datetime64("2000-01-01T12:00:00")) / np.timedelta64(1, "D")
+    g = np.radians((357.529 + 0.98560028 * d) % 360)
+    L = np.radians((280.459 + 0.98564736 * d) % 360 + 1.915 * np.sin(g) + 0.020 * np.sin(2 * g))
+    e = np.radians(23.439 - 0.00000036 * d)
+    ra = np.degrees(np.arctan2(np.cos(e) * np.sin(L), np.cos(L)))
+    dec = np.arcsin(np.sin(e) * np.sin(L))
+    gmst = (18.697374558 + 24.06570982441908 * d) % 24
+    ha = np.radians(gmst * 15 + lon - ra)
+    la = np.radians(lat)
+    return np.degrees(np.arcsin(np.sin(la) * np.sin(dec) + np.cos(la) * np.cos(dec) * np.cos(ha)))
+
+
 def q(x, p):
     x = x[~np.isnan(x)]
     return float(np.percentile(x, p)) if len(x) else np.nan
 
 
-def main(path):
+def main(path, lat=37.2386, lon=126.4286):
     t, o, p = load(path)
     T, O, P, step = to_minute_grid(t, o, p)
     n = len(T)
@@ -183,7 +208,7 @@ def main(path):
         with warnings.catch_warnings():
             warnings.simplefilter("ignore", RuntimeWarning)
             O, nbad = despike(O, P)
-        say(f"튀는 실측값(앞뒤와 30cm 넘게 다르거나 0.0) {nbad}개를 빈칸으로 처리")
+        say(f"튀는 실측값(앞뒤와 30cm 넘게 다름, 0.0, 20분 넘게 멈춤) {nbad}개를 빈칸으로 처리")
     miss = np.isnan(O[::step]).mean() * 100
     say(f"실측 빠진 비율 {miss:.1f}%  (예측 빠짐 {np.isnan(P).mean() * 100:.1f}%)")
     R = O - P
@@ -225,7 +250,11 @@ def main(path):
     issue = np.arange(max(WINDOWS), n, ISSUE_EVERY)
     issue = issue[~np.isnan(Onow[issue])]
     slope = np.gradient(P)                                     # cm/분
-    results = []
+    results, groups_out = [], []
+    month = T.astype("datetime64[M]").astype(int) % 12 + 1
+    season = np.select([np.isin(month, [3, 4, 5]), np.isin(month, [6, 7, 8]), np.isin(month, [9, 10, 11])],
+                       ["봄", "여름", "가을"], "겨울")
+    night = sun_elev(T, lat, lon) < -0.833                    # 일몰~일출 (해 윗부분이 지평선 아래)
     say("")
     say(f"H분 뒤 물높이 맞히기 ({len(issue)}번 예보, 정답 = 실측 11분 평균)")
     say("   방법                       H   전체 RMS  |오차|95%  |오차|99%   물찰때 95%  빠질때 95%  정조 95%   물찰때 시각오차 95%·99%(분)")
@@ -251,6 +280,24 @@ def main(path):
             results.append(r)
             say(f"   {name:<22} {H:>3}  {r['rms']:8.1f}  {r['p95']:9.1f}  {r['p99']:9.1f}   {r['rise95']:9.1f}  "
                 f"{r['fall95']:9.1f}  {r['slack95']:8.1f}   {r['rise_min95']:6.1f} · {r['rise_min99']:.1f}")
+            if name[0] in "AB":                                   # 계절·밤낮별 (예측만, 높이 보정)
+                sea, ngt = season[i1], night[i1]
+                for gname, gm in [("전체", np.ones(len(i1), bool)), ("봄", sea == "봄"), ("여름", sea == "여름"),
+                                  ("가을", sea == "가을"), ("겨울", sea == "겨울"), ("낮", ~ngt), ("밤", ngt),
+                                  ("여름 밤", (sea == "여름") & ngt)]:
+                    rr = rise & gm
+                    tg = np.abs(e[rr] / slope[i1][rr])
+                    groups_out.append(dict(method=name, H=H, group=gname, n=int(np.isfinite(e[gm]).sum()),
+                                           p95=q(np.abs(e[gm]), 95), p99=q(np.abs(e[gm]), 99),
+                                           rise_n=int(np.isfinite(tg).sum()), rise_min95=q(tg, 95), rise_min99=q(tg, 99)))
+    if groups_out:
+        say("")
+        say("계절·밤낮별 (A 예측만 / B 높이 보정): |높이 오차| 95%·99%(cm), 물 찰 때 시각 오차 95%·99%(분)")
+        say("   구분      H   방법          예보수   높이95  높이99   시각95  시각99")
+        for g in groups_out:
+            if g["n"]:
+                say(f"   {g['group']:<6} {g['H']:>4}   {g['method']:<10} {g['n']:>6}   {g['p95']:6.1f}  {g['p99']:6.1f}   "
+                    f"{g['rise_min95']:6.1f}  {g['rise_min99']:6.1f}")
     tau = fits[180][1]
     say("")
     say(f"D(180분)가 찾은 시각 차이 τ: 50% {q(tau[issue], 50):+.0f}분, 5~95% {q(tau[issue], 5):+.0f}~{q(tau[issue], 95):+.0f}분, "
@@ -261,6 +308,11 @@ def main(path):
         w = csv.DictWriter(f, fieldnames=list(results[0]))
         w.writeheader()
         w.writerows(results)
+    if groups_out:
+        with open(base + "_구분별.csv", "w", newline="", encoding="utf-8-sig") as f:
+            w = csv.DictWriter(f, fieldnames=list(groups_out[0]))
+            w.writeheader()
+            w.writerows(groups_out)
     with open(base + ".txt", "w", encoding="utf-8") as f:
         f.write("\n".join(lines) + "\n")
     draw(base + ".png", T, R, results, path)
@@ -281,8 +333,9 @@ def draw(out, T, R, results, path):
     COL = {"A": "#9a9993", "B": "#eb6834", "C": "#1baf7a", "D": "#2a78d6"}
     fig = plt.figure(figsize=(13, 8), facecolor="white")
     fig.text(0.05, 0.95, "실측 보정 방법 비교 — 높이로 고칠까, 시각으로 고칠까", fontsize=16, weight="bold", color=INK)
-    fig.text(0.05, 0.915, f"{os.path.basename(path)} · 국립해양조사원 조위관측소 실측·예측 조위 (공공데이터포털)",
-             fontsize=10.5, color=INK2)
+    src = ("실측: 국립해양조사원 바다누리 1분 자료 · 예측: 다른 해 실측으로 뽑은 조석 성분 (우리 계산)" if "우리예측" in path
+           else "국립해양조사원 조위관측소 실측·예측 조위 (공공데이터포털)")
+    fig.text(0.05, 0.915, f"{os.path.basename(path)} · {src}", fontsize=10.5, color=INK2)
     a = fig.add_axes([0.06, 0.58, 0.9, 0.27])
     a.plot(T.astype("datetime64[s]").astype(datetime), R, color=INK, lw=0.6)
     a.axhline(0, color="#b9b8b2", lw=1)
@@ -310,6 +363,6 @@ def draw(out, T, R, results, path):
 
 if __name__ == "__main__":
     if len(sys.argv) < 2:
-        print("사용법: python gg_tide_correction_test.py tide\\station_DT_0052_1m.csv")
+        print("사용법: python gg_tide_correction_test.py tide\\station_DT_0043_1m.csv [위도 경도]  (밤낮 계산용, 기본 영흥도)")
     else:
-        main(sys.argv[1])
+        main(sys.argv[1], *(float(v) for v in sys.argv[2:4]))
