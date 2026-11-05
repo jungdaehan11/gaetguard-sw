@@ -12,13 +12,19 @@
         피난 중 → 남은 길의 모든 칸에 (여유 뺀) 막히는 시각 전에 닿으면 그대로
         안내 중인 길에서 OFF_M 넘게 벗어나도 다시 계산
   다시 계산(지금 자리, 그 속도, 반응 2분 포함):
-        99% 여유로 새 탈출로 → 99% 여유로 피난(gg_decide.py 와 같은 조건)
-        → 95% 여유로 탈출 → 95% 여유로 피난
+        99% 여유로 새 탈출로 → 95% 여유로 탈출 → 99% 여유로 피난(gg_decide.py 와 같은 조건) → 95% 여유로 피난
+        (--order 피난먼저: gg_decide.py 처럼 99% 피난을 95% 탈출보다 먼저 — 비교용)
         → 예보만(통계 여유 없이, 칸 반을 건너는 시간만 뺌)으로 탈출
         → 그래도 안 되면 예보로 "가장 오래 물 밖에 있는 쪽": 해안 쪽으로 계속 / 피난처 / 제자리 대기 중 하나
         (99%로 안 될 때 바로 대기로 가면, 걸어서 더 버틸 수 있는 사람을 곧 잠길 자리에 세워 두게 됨 — 시험에서 확인)
-        99% 탈출이 아닌 판정이 처음 나온 때 = 구조 요청 시각
+        피난처 = 갈 수 있는 칸 중 가장 늦게 잠기는 곳, 그것과 REF_TIE분 안으로 비슷하면 육지에 가장 가까운 곳 (팀 합의 2026-11-06)
+        해안 쪽으로 계속 걷다가 다음 칸이 닿기 전에 잠기면 → 그 자리(더 갈 수 있는 가장 먼 곳)에서 대기
         한 번 피난·대기로 바뀌면 탈출로 되돌리지 않음 [가정: 왔다 갔다 하면 사람이 헷갈림]
+  위험도별 대응 (팀 합의 2026-11-06):
+        0 정상: 99% 여유로 탈출
+        1 주의: 99%로는 탈출이 안 되지만 95%로는 됨 → 관제에 알림, 탈출 안내는 계속
+        2 신고: 95%로도 탈출이 안 됨(피난·대기 포함) → 해경 신고, 30초마다 드론 RTK 위치 + 그 자리 물 30cm 예상 시각 전송
+        구조품 투하: 피난처 도착 또는 대기(더 갈 수 없는 곳)가 된 때, 그 자리가 잠기기 전에
 검증: 실제 실측 물때로 막히는 시각을 다시 계산 → 사람이 서 있거나 지나는 칸이 물 30cm가 되는 때 = 막힘
       (같은 사람을 "재판정 없음: 처음 길 그대로"로도 걸려서 비교)
 
@@ -48,10 +54,16 @@ STILL_M = 3.0       # m: 30초에 이보다 덜 움직였으면 "서 있었음" 
 OFF_M = 30.0        # m: 안내 중인 길에서 이만큼 넘게 벗어나면 그 자리에서 다시 계산 [가정]
 V_FLOOR = 0.1       # m/s: 멈춘 사람도 이 속도로 봄 (0으로 나누지 않게)
 T_END = 330.0       # 분: 판정 뒤 이만큼까지만 따라감 (물 계산 길이 360분 안)
+REF_TIE = 5.0       # 분: 피난처 후보가 가장 늦게 잠기는 곳과 이만큼 안으로 비슷하면 육지에 가까운 곳을 고름 [가정]
 # 95% 시각 오차(분) — gd.MARGIN(99%)과 같은 시험(영흥도 2025-01~2026-11, 우리 예측 + 높이 보정, 물 찰 때)의 95% 값
 MARGIN95 = {"밤": [(30, 4.9), (60, 8.3), (120, 14.5)],
             "낮": [(30, 7.0), (60, 11.7), (120, 17.9)]}
 LEVELS = [("99%", gd.MARGIN), ("95%", MARGIN95), ("예보만", None)]
+# 다시 계산 순서. 탈출먼저(기본, 팀 합의한 위험도와 맞춤): 99% 탈출 → 95% 탈출(주의) → 99% 피난 → 95% 피난 → 예보만
+#               피난먼저(gd.decide_at 과 같은 순서, 비교용): 99% 탈출 → 99% 피난 → 95% 탈출 → 95% 피난 → 예보만
+STEPS = {"탈출먼저": [("esc", "99%"), ("esc", "95%"), ("ref", "99%"), ("ref", "95%"), ("last", "예보만")],
+         "피난먼저": [("esc", "99%"), ("ref", "99%"), ("esc", "95%"), ("ref", "95%"), ("last", "예보만")]}
+ORDER = ["탈출먼저"]
 NB = [(-1, 0, 1.0), (1, 0, 1.0), (0, -1, 1.0), (0, 1, 1.0), (-1, -1, 1.4142), (-1, 1, 1.4142), (1, -1, 1.4142), (1, 1, 1.4142)]
 
 
@@ -121,10 +133,19 @@ def margin_level(level, x, night, v, res):
     return margin_arr(x, night, dict(LEVELS)[level])
 
 
-def refuge_path(G, start, tcs, walk, t_start):
+def land_dist(G):
+    """칸마다 가장 가까운 해안선 칸까지 거리(m). 한 번만 계산해 G에 둠"""
+    if "land_d" not in G:
+        from scipy import ndimage
+        G["land_d"] = ndimage.distance_transform_edt(~G["barrier"]) * G["res"]
+    return G["land_d"]
+
+
+def refuge_path(G, start, tcs, walk, t_start, tie=REF_TIE):
     """gd.refuge 와 같은 규칙 + 가는 길: start 칸에서 t_start(분)에 출발, 각 칸 (여유 뺀) 막히는 시각 전 도착으로 닿는 칸 중
-    가장 늦게 잠기는 칸 (같으면 가까운 칸). gd.refuge 와 다른 점: 해안선 칸(육지)에도 닿을 수 있음 → 닿으면 그게 가장 좋은 곳
-    (해안 바로 앞 칸에서 구조를 기다리라고 하지 않게)"""
+    가장 늦게 잠기는 칸. gd.refuge 와 다른 점
+      · 해안선 칸(육지)에도 닿을 수 있음 → 닿으면 그게 가장 좋은 곳 (해안 바로 앞 칸에서 구조를 기다리라고 하지 않게)
+      · 가장 늦게 잠기는 칸과 tie분 안으로 비슷한 칸 중 육지에 가장 가까운 칸 (같으면 먼저 닿는 칸) — 팀 합의"""
     sea, bar = G["sea"], G["barrier"]
     ny, nx = sea.shape
     step = G["res"] / walk / 60.0
@@ -151,10 +172,14 @@ def refuge_path(G, start, tcs, walk, t_start):
                     arr[kk] = ta
                     par[kk] = k
                     heapq.heappush(heap, (ta, kk))
-    path = [best[2]]
+    tv = tcs.ravel()
+    ld = land_dist(G).ravel()
+    bv = max(tv[k] for k in arr)
+    goal = min((k for k in arr if tv[k] >= bv - tie), key=lambda k: (ld[k], arr[k]))
+    path = [goal]
     while par[path[-1]] >= 0:
         path.append(par[path[-1]])
-    return best[0], best[1], path[::-1]
+    return float(tv[goal]), float(arr[goal]), path[::-1]
 
 
 class Redecider:
@@ -169,7 +194,11 @@ class Redecider:
         self.bar = G["barrier"].ravel()
         self.sea = G["sea"].ravel()
         self.plan, self.hist, self.waits, self.log, self.plans = None, [], [], [], []
-        self.alert = None
+        self.alert = None          # 신고 시각 (위험도 2)
+        self.caution = None        # 주의 시각 (위험도 1)
+        self.tier = 0
+        self.drop = None           # (시각, 위치) 구조품 투하
+        self.tx = []               # 구조대 전송 기록
         self.v_last = walk
 
     # ---- 좌표
@@ -208,9 +237,9 @@ class Redecider:
         for i, k in enumerate(cells):
             if arr[i] + B >= tf[k]:
                 if arr[i] < tf[k] or i == 0:
-                    return float(tf[k])
-                return float(tf[cells[i - 1]])
-        return np.inf
+                    return float(tf[k]), i
+                return float(tf[cells[i - 1]]), i
+        return np.inf, None
 
     # ---- 다시 계산
     @staticmethod
@@ -232,38 +261,43 @@ class Redecider:
             Lp = float(Lf[cy, cx]) - lead
             ch = self.chain(parent, c)
         same = self.same_way(ch, cur)
-        for lvl, _ in LEVELS:
-            if allow_escape and np.isfinite(Lp):
-                sl = Lp - float(margin_level(lvl, Lp, night, v, self.res)) - (0.0 if same else gd.REACT)
-                if sl >= 0:
-                    return self.make_plan("탈출", t, pos, ch, dict(L=Lp, slack=sl, v=v, off=off, level=lvl, cont=same))
+        for kind, lvl in STEPS[ORDER[0]]:
+            if kind == "esc":
+                if allow_escape and np.isfinite(Lp):
+                    sl = Lp - float(margin_level(lvl, Lp, night, v, self.res)) - (0.0 if same else gd.REACT)
+                    if sl >= 0:
+                        return self.make_plan("탈출", t, pos, ch, dict(L=Lp, slack=sl, v=v, off=off, level=lvl, cont=same))
+                continue
             tcs = np.where(np.isfinite(tcf), tcf - margin_level(lvl, tcf, night, v, self.res), np.inf)
             best_t, t_arr, path = refuge_path(self.G, c, tcs, v, gd.REACT + lead)
             if self.bar[path[-1]]:                          # 피난 규칙(칸마다 여유)으로 해안까지 닿음 → 탈출
                 return self.make_plan("탈출", t, pos, path, dict(L=np.nan, slack=np.nan, arrive=t_arr, v=v, off=off, level=lvl,
                                                               via_ref=True, cont=self.same_way(path, cur)))
-            if lvl != "예보만":
+            if kind == "ref":
                 if best_t > tcs[cy, cx] + gd.MIN_GAIN:
                     return self.make_plan("피난", t, pos, path, dict(target_tcs=best_t, here_tcs=float(tcs[cy, cx]), arrive=t_arr, v=v,
                                                                   off=off, level=lvl))
                 continue
-            # 마지막 단계: 예보로 가장 오래 물 밖에 있는 쪽 (지금 길 계속 / 새 길로 해안 쪽 / 피난처 / 제자리)
+            # 마지막 단계 (kind == "last", 예보만): 예보로 가장 오래 물 밖에 있는 쪽 (지금 길 계속 / 새 길로 해안 쪽 / 피난처 / 제자리)
             B = self.res / 2 * 1.4142 / v / 60.0
+            if allow_escape and np.isfinite(Lp) and Lp - B - (0.0 if same else gd.REACT) >= 0:
+                return self.make_plan("탈출", t, pos, ch, dict(L=Lp, slack=Lp - B, v=v, off=off, level=lvl, cont=same))
             d_wait = float(tcf[cy, cx])
             cand = []
             if cur is not None and len(cur) > 1:
-                cand.append((self.walk_dry(t, pos, cur, v, tcf, 0.0), 3, "cur"))
+                cand.append((self.walk_dry(t, pos, cur, v, tcf, 0.0)[0], 3, "cur"))
             if ch is not None and np.isfinite(Lp):
-                cand.append((self.walk_dry(t, pos, ch, v, tcf, 0.0 if same else gd.REACT), 2, "new"))
+                cand.append((self.walk_dry(t, pos, ch, v, tcf, 0.0 if same else gd.REACT)[0], 2, "new"))
             if len(path) > 1:
                 cand.append((best_t + B, 1, "ref"))
-            if cand:
-                d, _, kind = max(cand)
+            if cand:                                       # 가장 오래 버티는 쪽, REF_TIE분 안으로 비슷하면 육지 쪽(걷기)
+                dmax = max(c_[0] for c_ in cand)
+                d, _, which = max((c_ for c_ in cand if c_[0] >= dmax - REF_TIE), key=lambda c_: c_[1])
                 if d > d_wait + gd.MIN_GAIN:
-                    if kind == "cur":
+                    if which == "cur":
                         return self.make_plan("탈출", t, pos, list(cur), dict(L=np.nan, slack=np.nan, v=v, off=off, level="예보만",
                                                                            short=True, dry=d, cont=True))
-                    if kind == "new":
+                    if which == "new":
                         return self.make_plan("탈출", t, pos, ch, dict(L=Lp, slack=Lp - B, v=v, off=off, level="예보만",
                                                                      short=True, dry=d, cont=same))
                     return self.make_plan("피난", t, pos, path, dict(target_tcs=best_t, here_tcs=float(tcs[cy, cx]), arrive=t_arr, v=v,
@@ -320,7 +354,9 @@ class Redecider:
         tf = tcf.ravel()
         if P["mode"] == "탈출" and P["short"]:            # 해안 쪽으로 계속: 예보로 물에 막히는 때가 정했을 때보다 5분 넘게 당겨지지 않으면 그대로
             rest = [c_now] + [int(k) for k in cells if k != c_now]
-            dry = self.walk_dry(t, pos, rest, v, tcf, wait_left)
+            dry, i_fail = self.walk_dry(t, pos, rest, v, tcf, wait_left)
+            if i_fail is not None and i_fail <= 1 and d <= OFF_M:      # 다음 칸이 닿기 전에 잠김 → 여기가 갈 수 있는 끝
+                return False, dict(s=s_p, d=d, L=np.nan, slack=np.nan, rest=rest, stop_here=True)
             ok = dry >= P["info"]["dry"] - (t - P["t_set"]) - 5.0 and d <= OFF_M
             return ok, dict(s=s_p, d=d, L=np.nan, slack=dry - (P["info"]["dry"] - (t - P["t_set"])), rest=rest)
         if P["mode"] == "탈출" and not P["via_ref"]:
@@ -335,43 +371,92 @@ class Redecider:
         ok = worst < 0 and d <= OFF_M
         return ok, dict(s=s_p, d=d, L=np.nan, slack=-worst, rest=[c_now] + [int(k) for k in cells if k != c_now])
 
+    def tier_of(self, P):
+        """0 정상: 99% 탈출 / 1 주의: 그보다 빠듯하지만 95% 안의 탈출 / 2 신고: 95%로도 탈출 못 함(피난·대기·예보만)"""
+        if P["mode"] in ("탈출", "도착") and P["level"] == "99%" and not P["via_ref"]:
+            return 0
+        if P["mode"] in ("탈출", "도착") and P["level"] in ("99%", "95%"):
+            return 1
+        return 2
+
+    def after_plan(self, t, pos):
+        """새 계획마다: 위험도(올라가기만 함), 주의·신고 시각, 대기면 구조품 투하"""
+        tr = self.tier_of(self.plan)
+        if tr > self.tier:
+            self.tier = tr
+        if self.tier >= 1 and self.caution is None:
+            self.caution = t
+        if self.tier >= 2 and self.alert is None:
+            self.alert = t
+        if self.plan["mode"] == "대기":
+            self.mark_drop(t, pos)
+
+    def mark_drop(self, t, pos):
+        if self.drop is None:
+            self.drop = (t, np.array(pos, float))
+
+    def send(self, t, pos):
+        """주의부터 30초마다 구조대 전송: 드론 RTK 위치(시뮬레이션에선 사람 위치로 대신) + 그 자리 물 30cm 예상 시각"""
+        if self.tier < 1:
+            return
+        tcf, night, _ = self.W.at(t)
+        k = self.cell(*pos)
+        f = float(tcf.ravel()[k])
+        self.tx.append(dict(t_min=round(t, 2), tier=self.tier, n=round(float(pos[0]), 1), e=round(float(pos[1]), 1),
+                            mode=self.plan["mode"], water_fc_min=round(t + f, 1) if np.isfinite(f) else None,
+                            water_99_min=round(t + f - float(gd.margin(f, night)), 1) if np.isfinite(f) else None))
+
     # ---- 30초마다
     def start(self, pos):
         self.hist.append((0.0, tuple(pos)))
         self.plan = self.replan(0.0, pos, self.walk, True)
         self.waits.append((0.0, gd.REACT))
-        if self.plan["mode"] != "탈출" or self.plan["level"] != "99%":
-            self.alert = 0.0
+        self.after_plan(0.0, pos)
         self._log(0.0, pos, self.walk, dict(s=0, d=0, L=self.plan["info"].get("L", np.nan),
                                               slack=self.plan["info"].get("slack", np.nan)), "처음 판정")
+        self.send(0.0, pos)
         return self.plan
 
     def tick(self, t, pos):
         self.hist.append((t, tuple(pos)))
         P = self.plan
         if P["mode"] in ("도착", "피난처", "대기"):
+            self.send(t, pos)
             return P
         v = self.speed()
         ok, info = self.check(t, pos, v)
         if info["s"] >= P["s"][-1] - 5.0 and info["d"] <= OFF_M:
             P["mode"] = "도착" if P["mode"] == "탈출" else "피난처"
-            self._log(t, pos, v, info, "도착" if P["mode"] == "도착" else "피난처 도착")
+            if P["mode"] == "피난처":
+                self.mark_drop(t, pos)
+            self._log(t, pos, v, info, "도착" if P["mode"] == "도착" else "피난처 도착 → 구조품 투하")
+            self.send(t, pos)
             return P
         if ok:
             self._log(t, pos, v, info, "")
+            self.send(t, pos)
             return P
+        if info.get("stop_here"):
+            self.plan = self.make_plan("대기", t, pos, [], dict(v=v, level="-", why="더 갈 수 없음"))
+            self.after_plan(t, pos)
+            self._log(t, pos, v, info, "다음 칸이 닿기 전에 잠김 → 여기서 대기 (갈 수 있는 끝) → 구조품 투하")
+            self.send(t, pos)
+            return self.plan
         why = f"길에서 {info['d']:.0f}m 벗어남" if info["d"] > OFF_M else f"여유 모자람 ({info['slack']:+.1f}분, {v:.2f}m/s)"
         cur = info.get("rest") if (P["mode"] == "탈출" and info["d"] <= OFF_M) else None
         newP = self.replan(t, pos, v, P["mode"] == "탈출", cur)
         self.plan = newP
         if not newP["cont"]:
             self.waits.append((t, t + gd.REACT))
-        if (newP["mode"] != "탈출" or newP["level"] != "99%") and self.alert is None:
-            self.alert = t
+        self.after_plan(t, pos)
         lv = {"99%": " (99% 여유)", "95%": " (95% 여유)", "예보만": " (예보만, 통계 여유 없이)"}.get(newP["level"], "")
         if newP["short"]:
             lv = f" (해안 쪽으로 계속, 예보로 {newP['info']['dry']:.0f}분 뒤 물에 막힘)"
-        self._log(t, pos, v, info, f"{why} → {newP['mode']}{lv}" + (" · 같은 길 계속" if newP["cont"] else ""))
+        tier_txt = {1: " [주의: 관제 알림]", 2: " [신고: 해경 + 위치 전송]"}
+        self._log(t, pos, v, info, f"{why} → {newP['mode']}{lv}" + (" · 같은 길 계속" if newP["cont"] else "")
+                  + (" → 구조품 투하" if newP["mode"] == "대기" else "")
+                  + (tier_txt.get(self.tier, "") if (self.caution == t or self.alert == t) else ""))
+        self.send(t, pos)
         return newP
 
     def _log(self, t, pos, v, info, event):
@@ -469,7 +554,8 @@ def simulate(G, water, tct, origin, start_ne, beh, redecide=True, walk=0.5):
             if plan["mode"] == "피난":
                 plan["mode"] = "피난처"
                 refuge_t = t
-                eng._log(t, pos, 0, dict(s=plan["s"][-1], d=0), "피난처 도착")
+                eng.mark_drop(t, pos)
+                eng._log(t, pos, 0, dict(s=plan["s"][-1], d=0), "피난처 도착 → 구조품 투하")
             caught = max(t, float(tf[k])) if eng.sea[k] else None
             if caught is not None and caught > T_END:
                 caught = None
@@ -481,7 +567,15 @@ def simulate(G, water, tct, origin, start_ne, beh, redecide=True, walk=0.5):
         mm = [tf[k] - tt for (tt, _, _), k in zip(tr, ks) if eng.sea[k] and np.isfinite(tf[k])]
         minmarg = float(min(mm)) if mm else np.inf
     final_mode = (eng.plan if redecide else P0)["mode"]
+    drop = eng.drop if redecide else None
+    drop_water = drop_land = None
+    if drop is not None:
+        kd = eng.cell(*drop[1])
+        drop_water = float(tf[kd]) - drop[0] if eng.sea[kd] and np.isfinite(tf[kd]) else np.inf   # 투하 뒤 그 자리 물 30cm까지 (실제)
+        drop_land = float(land_dist(G).ravel()[kd])
     return dict(arrived=arrived, caught=caught, alert=eng.alert if redecide else None, final=final_mode, refuge_t=refuge_t,
+                caution=eng.caution if redecide else None, drop=drop, drop_water=drop_water, drop_land=drop_land,
+                tx=eng.tx if redecide else [],
                 walked=float(np.sum(np.hypot(*np.diff(tr[:, 1:], axis=0).T))), track=tr, minmarg=minmarg,
                 plans=eng.plans if redecide else [P0], log=eng.log, n_switch=len(eng.plans) - 1 if redecide else 0)
 
@@ -498,10 +592,14 @@ def describe(r, t0):
         s = "제자리 대기" + (f", 물 30cm {hm(r['caught'])}" if r["caught"] else ", 계산 끝까지 안 잠김")
     else:
         s = f"{hm(r['caught'])} 걷던 길에서 막힘 (물 30cm)" if r["caught"] else "끝까지 못 나옴"
+    if r.get("caution") is not None and r["caution"] != r["alert"]:
+        s += f" · 주의 {hm(r['caution'])}"
     if r["alert"] is not None:
-        s += f" · 구조 요청 {hm(r['alert'])}"
+        s += f" · 신고 {hm(r['alert'])}"
         if r["caught"]:
             s += f" (물 차기 {r['caught'] - r['alert']:.0f}분 전)"
+    if r.get("drop") is not None:
+        s += f" · 구조품 투하 {hm(r['drop'][0])} (그 자리 물 30cm까지 {r['drop_water']:.0f}분, 육지까지 {r['drop_land']:.0f}m)"
     return s
 
 
@@ -535,6 +633,16 @@ def run_case(a, G, T, O, P):
             for row in r1["log"]:
                 w.writerow([name, 1, row["t_min"], str(t0 + np.timedelta64(int(round(row["t_min"] * 60)), "s"))[11:19], row["mode"],
                             row["plan"], row["v_est"], row["n"], row["e"], row["along_m"], row["off_m"], row["slack_min"], row["event"]])
+    lat0, lon0 = origin
+    with open(base + "_구조대전송.csv", "w", newline="", encoding="utf-8-sig") as f:
+        w = csv.writer(f)
+        w.writerow(["behavior", "clock", "tier", "mode", "lat", "lon", "water30cm_forecast", "water30cm_99pct"])
+        hm = lambda x: "" if x is None else str(t0 + np.timedelta64(int(round(x * 60)), "s"))[11:16]     # noqa: E731
+        for name, (r0, r1) in res.items():
+            for row in r1["tx"]:
+                w.writerow([name, str(t0 + np.timedelta64(int(round(row["t_min"] * 60)), "s"))[11:19], {1: "주의", 2: "신고"}[row["tier"]], row["mode"],
+                            round(lat0 + row["n"] / G["ky"], 6), round(lon0 + row["e"] / G["kx"], 6),
+                            hm(row["water_fc_min"]), hm(row["water_99_min"])])
     with open(base + "_요약.csv", "w", newline="", encoding="utf-8-sig") as f:
         w = csv.writer(f)
         w.writerow(["behavior", "redecide", "result"])
@@ -542,7 +650,7 @@ def run_case(a, G, T, O, P):
             w.writerow([name, 0, describe(r0, t0)])
             w.writerow([name, 1, describe(r1, t0)])
     draw_case(base + ".png", G, route, t0, res, tct, a)
-    print("저장:", base + ".csv", base + "_요약.csv", base + ".png")
+    print("저장:", base + ".csv", base + "_요약.csv", base + "_구조대전송.csv", base + ".png")
 
 
 def short(r, t0):
@@ -555,8 +663,12 @@ def short(r, t0):
         s = f"제자리 대기 → 물 30cm {hm(r['caught'])}"
     else:
         s = f"{hm(r['caught'])} 걷던 길에서 물에 막힘\n(미리 알린 것 없음)" if r["alert"] is None else f"{hm(r['caught'])} 걷던 길에서 물에 막힘"
+    if r.get("caution") is not None and r["caution"] != r["alert"]:
+        s += f"\n주의(관제) {hm(r['caution'])}"
     if r["alert"] is not None:
-        s += f"\n구조 요청 {hm(r['alert'])}" + (f" (물 차기 {r['caught'] - r['alert']:.0f}분 전)" if r["caught"] else "")
+        s += f"\n신고 {hm(r['alert'])}" + (f" (물 차기 {r['caught'] - r['alert']:.0f}분 전)" if r["caught"] else "")
+    if r.get("drop") is not None:
+        s += f"\n구조품 {hm(r['drop'][0])} (물까지 {r['drop_water']:.0f}분)"
     return s
 
 
@@ -590,12 +702,14 @@ def draw_case(out, G, route, t0, res, tct, a):
     ylim = (allp[:, 0].min() - pad, allp[:, 0].max() + pad)
     xlim = (allp[:, 1].min() - pad * 1.3, allp[:, 1].max() + pad * 1.3)
     k = len(res)
-    fig = plt.figure(figsize=(3.5 * k + 0.6, 9.4), facecolor="white")
+    fig = plt.figure(figsize=(3.5 * k + 0.6, 10.4), facecolor="white")
     fig.text(0.02, 0.955, "걷는 동안 30초마다 다시 판정 — 같은 사람을 '처음 길 그대로'와 '재판정'으로 걸려 실제 물때로 비교",
              fontsize=15.5, weight="bold", color=INK)
     fig.text(0.02, 0.922, f"영흥도 {str(t0)[:16].replace('T', ' ')} 판정 (탈출, 남은 여유 {route['slack_min']}분, 탈출로 {route['length_m']}m). "
              "재판정: 그때까지의 실측 보정 + 실제로 걸은 속도 + 지금 위치로 다시 계산 → 99% 여유로 안 되면 95% 여유, "
-             "그래도 안 되면 예보로 가장 오래 물 밖에 있는 쪽", fontsize=9.6, color=INK2)
+             "그래도 안 되면 예보로 가장 오래 물 밖에 있는 쪽(비슷하면 육지 쪽)", fontsize=9.6, color=INK2)
+    fig.text(0.02, 0.9, "위험도: 주의 = 99%로는 탈출 못 함(관제 알림) · 신고 = 95%로도 못 함(해경 신고 + 30초마다 드론 RTK 위치·그 자리 물 예상 시각 전송) · "
+             "구조품 = 더 갈 수 없는 곳(피난처·대기)에서 잠기기 전에 투하", fontsize=9.6, color=INK2)
     w = 0.96 / k
     base = np.where(G["land"] | G["barrier"], 0, 1).astype(float)
     cls = np.full(D["dec"].shape, np.nan)
@@ -605,7 +719,7 @@ def draw_case(out, G, route, t0, res, tct, a):
     cls[D["dec"] == 3] = 3
     rl = np.array(route["path_latlon"])
     for i, (name, (r0, r1)) in enumerate(res.items()):
-        ax = fig.add_axes([0.02 + i * w, 0.33, w - 0.012, 0.56])
+        ax = fig.add_axes([0.02 + i * w, 0.37, w - 0.012, 0.5])
         ax.pcolormesh(G["GX"], G["GY"], base, cmap=ListedColormap([LAND, SEA]), shading="auto", zorder=0)
         ax.pcolormesh(G["GX"], G["GY"], cls, cmap=ListedColormap(COLS), vmin=-0.5, vmax=3.5, shading="auto", alpha=0.45, zorder=1)
         ax.plot(rl[:, 1], rl[:, 0], color=INK, lw=0.9, ls=(0, (4, 3)), zorder=2)
@@ -618,7 +732,10 @@ def draw_case(out, G, route, t0, res, tct, a):
                 ax.scatter([lo[-1]], [la[-1]], s=60, marker="^", color=col, edgecolor="white", linewidth=0.8, zorder=z + 5)
             else:
                 ax.scatter([lo[-1]], [la[-1]], s=70, marker="X", color=col, edgecolor="white", linewidth=0.8, zorder=z + 5)
-        sw = [row for row in r1["log"] if "→" in row["event"]]
+        if r1.get("drop") is not None:
+            la, lo = to_ll([r1["drop"][1][0]], [r1["drop"][1][1]])
+            ax.scatter(lo, la, s=120, marker="P", color=INK, edgecolor="white", linewidth=1.0, zorder=13)
+        sw = [row for row in r1["log"] if row["event"].startswith(("여유 모자람", "길에서", "다음 칸"))]
         if sw:
             la, lo = to_ll([sw[0]["n"]], [sw[0]["e"]])
             ax.scatter(lo, la, s=46, marker="D", color=SW, edgecolor="white", linewidth=0.8, zorder=12)
@@ -636,10 +753,10 @@ def draw_case(out, G, route, t0, res, tct, a):
             ax.plot([bx, bx + 500 / kx], [by, by], color=INK, lw=2.2, zorder=13)
             ax.text(bx + 250 / kx, by + (ylim[1] - ylim[0]) * 0.012, "500 m", ha="center", fontsize=9, color=INK, zorder=13)
         x0 = 0.02 + i * w
-        fig.text(x0, 0.305, "재판정 없음 (처음 길 그대로)", fontsize=9.6, color=C0, weight="bold", va="top")
-        fig.text(x0, 0.283, short(r0, t0), fontsize=9.4, color=INK, va="top", linespacing=1.4)
-        fig.text(x0, 0.215, "재판정 있음", fontsize=9.6, color=C1, weight="bold", va="top")
-        evs = [row for row in r1["log"] if "→" in row["event"]]
+        fig.text(x0, 0.345, "재판정 없음 (처음 길 그대로)", fontsize=9.6, color=C0, weight="bold", va="top")
+        fig.text(x0, 0.325, short(r0, t0), fontsize=9.4, color=INK, va="top", linespacing=1.4)
+        fig.text(x0, 0.262, "재판정 있음", fontsize=9.6, color=C1, weight="bold", va="top")
+        evs = [row for row in r1["log"] if row["event"].startswith(("여유 모자람", "길에서", "다음 칸"))]
         txt = short(r1, t0)
         if evs:
             e0 = evs[0]
@@ -649,7 +766,8 @@ def draw_case(out, G, route, t0, res, tct, a):
             txt = f"{hm} {why}\n→ {what}" + (f" 외 {len(evs) - 1}번 다시 계산" if len(evs) > 1 else "") + "\n" + txt
         else:
             txt = "끝까지 처음 길 유지\n" + txt
-        fig.text(x0, 0.193, txt, fontsize=9.4, color=INK, va="top", linespacing=1.4)
+        fig.text(x0, 0.242, txt.replace(" [주의: 관제 알림]", "").replace(" [신고: 해경 + 위치 전송]", "")
+                 .replace(" → 구조품 투하", ""), fontsize=9.4, color=INK, va="top", linespacing=1.4)
     h = [Line2D([], [], color=INK, lw=0.9, ls=(0, (4, 3)), label="처음 판정한 탈출로"),
          Line2D([], [], color=C0, lw=2.6, label="재판정 없음: 사람이 걸은 길"),
          Line2D([], [], color=C1, lw=1.8, label="재판정 있음: 사람이 걸은 길"),
@@ -657,8 +775,9 @@ def draw_case(out, G, route, t0, res, tct, a):
          Line2D([], [], color=INK2, marker="*", ls="none", markersize=9, label="해안 도착"),
          Line2D([], [], color=INK2, marker="^", ls="none", markersize=7, label="피난처·대기 (구조 기다림)"),
          Line2D([], [], color=INK2, marker="X", ls="none", markersize=7, label="걷다가 물에 막힘"),
+         Line2D([], [], color=INK, marker="P", ls="none", markersize=9, label="구조품 투하"),
          Patch(fc=COLS[1], alpha=0.6, label="바탕: 02:07 판정 (초록 탈출 · 주황 피난 · 빨강 대기)")]
-    fig.legend(handles=h, loc="lower left", bbox_to_anchor=(0.02, 0.005), ncol=4, frameon=False, fontsize=9.4)
+    fig.legend(handles=h, loc="lower left", bbox_to_anchor=(0.02, 0.005), ncol=5, frameon=False, fontsize=9.4)
     fig.text(0.98, 0.012, "물 30cm = 통행 불가로 봄. 사람 위치는 오차 없음, 반응 2분, 갯골 칸 0.5m 낮춤 [가정]. "
              "출처: BADA2024, 개방海 갯골·해안선, 영흥도 조위관측소 실측, 우리 조석 예측", ha="right", fontsize=8, color=MUTED)
     fig.savefig(out, dpi=150)
@@ -671,11 +790,13 @@ def main():
     ap.add_argument("--route")
     ap.add_argument("--batch", type=int, default=0, help="밤 큰 간조 N번으로 일괄 검증")
     ap.add_argument("--cells", type=int, default=5, help="일괄 검증: 판정마다 출발 칸 수")
+    ap.add_argument("--order", choices=list(STEPS), default="탈출먼저", help="다시 계산 순서")
     ap.add_argument("--res", type=float, default=50.0)
     ap.add_argument("--walk", type=float, default=0.5)
     ap.add_argument("--depth", type=float, default=0.30)
     ap.add_argument("--drop", type=float, default=0.5)
     a = ap.parse_args()
+    ORDER[0] = a.order
     G = rm.build_grid(rm.AREA, a.res, a.drop)
     T, O, P = gd.load(a.tide)
     if a.batch:
@@ -749,9 +870,13 @@ def run_batch(a, G, T, O, P):
                                      out0=outcome(r0), water0=None if r0["caught"] is None else round(r0["caught"], 1),
                                      out1=outcome(r1), water1=None if r1["caught"] is None else round(r1["caught"], 1),
                                      alert1=None if r1["alert"] is None else round(r1["alert"], 1), switches1=r1["n_switch"],
+                                     caution1=None if r1["caution"] is None else round(r1["caution"], 1),
+                                     drop1=None if r1["drop"] is None else round(r1["drop"][0], 1),
+                                     dropwater1=None if r1["drop_water"] is None else round(r1["drop_water"], 1),
+                                     dropland1=None if r1["drop_land"] is None else round(r1["drop_land"]),
                                      final1=r1["final"], level1=r1["plans"][-1]["level"]))
         print(f"   {n_i + 1}/{len(pick)} {str(T[i])[:16]} 끝, 지금까지 {len(rows)}건", flush=True)
-    out = os.path.join(rm.HERE, "tide", f"재판정검증_{rm.AREA['key']}_밤간조{len(pick)}번.csv")
+    out = os.path.join(rm.HERE, "tide", f"재판정검증_{rm.AREA['key']}_밤간조{len(pick)}번_{ORDER[0]}.csv")
     with open(out, "w", newline="", encoding="utf-8-sig") as f:
         w = csv.DictWriter(f, fieldnames=list(rows[0]))
         w.writeheader()
@@ -765,10 +890,12 @@ def run_batch(a, G, T, O, P):
 
 
 def summarize(rows):
-    """사람마다: 재판정 없음/있음 결과 수, 구조 요청~물 30cm(중앙값), 바뀐 결과"""
+    """사람마다: 재판정 없음/있음 결과, 위험도별 대응, 구조품 투하"""
     out = []
-    print("\n" + " | ".join(["사람", "건수", "없음: 탈출·걷다가 막힘", "있음: 탈출·피난처·대기·걷다가 막힘", "요청 없이 막힘",
-                              "구조 요청~물 30cm 중앙값", "요청했지만 해안 도착", "없음은 탈출, 있음은 못 함", "물이 1분 넘게 더 일찍 닿음"]))
+    print("\n" + " | ".join(["사람", "건수", "없음: 탈출·걷다가 막힘", "있음: 탈출·피난처·대기·걷다가 막힘", "신고 없이 막힘",
+                              "주의·신고", "신고~물 30cm 중앙값", "신고했지만 해안 도착", "투하·물보다 늦은 투하",
+                              "투하 뒤 물까지 중앙값(최소)", "투하 지점~육지 중앙값", "없음은 탈출, 있음은 못 함", "물이 1분 넘게 더 일찍"]))
+    fin = lambda x: x is not None and np.isfinite(x)        # noqa: E731
     for name in BEHAVIORS:
         rs = [r for r in rows if r["behavior"] == name]
         if not rs:
@@ -776,17 +903,26 @@ def summarize(rows):
         c0 = lambda k: sum(r["out0"] == k for r in rs)          # noqa: E731
         c1 = lambda k: sum(r["out1"] == k for r in rs)          # noqa: E731
         lead = [r["water1"] - r["alert1"] for r in rs if r["alert1"] is not None and r["water1"] is not None]
+        dw = [r["dropwater1"] for r in rs if r["drop1"] is not None and fin(r["dropwater1"])]
+        dl = [r["dropland1"] for r in rs if r["drop1"] is not None and r["dropland1"] is not None]
         d = dict(behavior=name, n=len(rs), esc0=c0("탈출 성공"), caught0=c0("걷다가 막힘"),
                  esc1=c1("탈출 성공"), refuge1=c1("피난처 도착"), wait1=c1("대기"), caught1=c1("걷다가 막힘"),
-                 caught1_noalert=sum(r["out1"] == "걷다가 막힘" and r["alert1"] is None for r in rs),
-                 lead_med=float(np.median(lead)) if lead else np.nan, lead_n=len(lead),
-                 alert_but_escaped=sum(r["out1"] == "탈출 성공" and r["alert1"] is not None for r in rs),
+                 caught1_noreport=sum(r["out1"] == "걷다가 막힘" and r["alert1"] is None for r in rs),
+                 caution=sum(r["caution1"] is not None for r in rs), report=sum(r["alert1"] is not None for r in rs),
+                 lead_med=float(np.median(lead)) if lead else np.nan,
+                 report_but_escaped=sum(r["out1"] == "탈출 성공" and r["alert1"] is not None for r in rs),
+                 drops=sum(r["drop1"] is not None for r in rs),
+                 drop_late=sum(r["drop1"] is not None and r["dropwater1"] is not None and r["dropwater1"] <= 0 for r in rs),
+                 drop_water_med=float(np.median(dw)) if dw else np.nan, drop_water_min=float(np.min(dw)) if dw else np.nan,
+                 drop_land_med=float(np.median(dl)) if dl else np.nan,
                  lost=sum(r["out0"] == "탈출 성공" and r["out1"] != "탈출 성공" for r in rs),
                  worse=sum(r["out0"] != "탈출 성공" and r["out1"] != "탈출 성공" and r["water0"] is not None
                            and r["water1"] is not None and r["water1"] < r["water0"] - 1 for r in rs))
         out.append(d)
         print(f"{name} | {d['n']} | {d['esc0']}·{d['caught0']} | {d['esc1']}·{d['refuge1']}·{d['wait1']}·{d['caught1']} | "
-              f"{d['caught1_noalert']} | {d['lead_med']:.0f}분({d['lead_n']}건) | {d['alert_but_escaped']} | {d['lost']} | {d['worse']}")
+              f"{d['caught1_noreport']} | {d['caution']}·{d['report']} | {d['lead_med']:.0f}분 | {d['report_but_escaped']} | "
+              f"{d['drops']}·{d['drop_late']} | {d['drop_water_med']:.0f}분({d['drop_water_min']:.0f}) | {d['drop_land_med']:.0f}m | "
+              f"{d['lost']} | {d['worse']}")
     return out
 
 
