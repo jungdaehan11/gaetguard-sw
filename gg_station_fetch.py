@@ -8,10 +8,10 @@
 인증키: gg_tide_fetch.py 와 같음 (같은 폴더의 datago_key.txt 또는 환경변수 DATA_GO_KR_KEY)
 
 실행 (cmd, 이 폴더에서)
-  python gg_station_fetch.py                                  # 인천송도·인천, 어제까지 184일, 10분 간격
+  python gg_station_fetch.py                                  # 영흥도·인천송도·인천, 어제까지 184일, 10분 간격
   python gg_station_fetch.py --days 30                        # 최근 30일만
   python gg_station_fetch.py --start 20260505 --end 20261104  # 기간 직접
-  python gg_station_fetch.py --stations DT_0052               # 관측소 하나만
+  python gg_station_fetch.py --stations DT_0043               # 관측소 하나만 (영흥도)
 
 결과
   tide\\station_<관측소코드>_<간격>m.csv   열: date, time, obs_cm(실측), pred_cm(예측), station
@@ -31,7 +31,7 @@ URL = os.environ.get("SURVEY_URL",
                      "https://apis.data.go.kr/1192136/surveyTideLevel/GetSurveyTideLevelApiService")
 HERE = os.path.dirname(os.path.abspath(__file__))
 # 2026-11-05 실제 API로 확인한 코드 (돌려준 관측소 이름으로 확인)
-STATIONS = {"DT_0052": "인천송도", "DT_0001": "인천"}
+STATIONS = {"DT_0043": "영흥도", "DT_0052": "인천송도", "DT_0001": "인천"}
 
 
 def load_key():
