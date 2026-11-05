@@ -80,7 +80,7 @@ def main():
             break
     plt.rcParams["axes.unicode_minus"] = False
     INK, INK2, MUTED, LAND, SEA = "#0b0b0b", "#52514e", "#9a9993", "#e9e7e1", "#c9d3df"
-    COLS = ["#1baf7a", "#a8dcc4", "#eda100", "#d6402b"]
+    COLS = gd.DEC_COLS
     fig = plt.figure(figsize=(12.5, 8.6), facecolor="white")
     fig.text(0.04, 0.955, "계산 → 판정 → 탈출로 → 드론 빛길 안내, 한 장으로 (시뮬레이터, 실제 크기)", fontsize=16, weight="bold", color=INK)
     fig.text(0.04, 0.92, f"영흥도 {a.time} · 그때까지의 정보(우리 예측 + 실측 보정 + 99% 여유)로 판정 → 고른 탈출로를 "
@@ -88,12 +88,8 @@ def main():
     ax = fig.add_axes([0.04, 0.08, 0.62, 0.8])
     base = np.where(G["land"] | G["barrier"], 0, 1).astype(float)
     ax.pcolormesh(G["GX"], G["GY"], base, cmap=ListedColormap([LAND, SEA]), shading="auto", zorder=0)
-    cls = np.full(D["dec"].shape, np.nan)
-    cls[(D["dec"] == 1) & (D["slack"] >= 30)] = 0
-    cls[(D["dec"] == 1) & (D["slack"] < 30)] = 1
-    cls[D["dec"] == 2] = 2
-    cls[D["dec"] == 3] = 3
-    ax.pcolormesh(G["GX"], G["GY"], cls, cmap=ListedColormap(COLS), vmin=-0.5, vmax=3.5, shading="auto", alpha=0.85, zorder=1)
+    cls = gd.dec_classes(D["dec"])
+    ax.pcolormesh(G["GX"], G["GY"], cls, cmap=ListedColormap(COLS), vmin=-0.5, vmax=2.5, shading="auto", alpha=0.6, zorder=1)
     rl = np.array(route["path_latlon"])
     ax.plot(rl[:, 1], rl[:, 0], color=INK, lw=1, ls=(0, (4, 3)), zorder=3)
     dlat, dlon = to_ll(dn, de)
@@ -125,8 +121,7 @@ def main():
     bx, by = x0 + (x1 - x0) * 0.05, y0 + (y1 - y0) * 0.04
     ax.plot([bx, bx + 500 / kx], [by, by], color=INK, lw=2.5, zorder=9)
     ax.text(bx + 250 / kx, by + (y1 - y0) * 0.012, "500 m", ha="center", fontsize=9.5, color=INK, zorder=9)
-    h = [Patch(fc=COLS[0], label="탈출 (여유 30분 넘게)"), Patch(fc=COLS[1], label="탈출 (여유 0~30분)"),
-         Patch(fc=COLS[2], label="피난"), Patch(fc=COLS[3], label="대기"),
+    h = [Patch(fc=c, alpha=0.6, label=l.split(":")[0] + " (" + l.split(": ")[1].split(" (")[0] + ")") for c, l in zip(COLS, gd.DEC_LABELS)] + [
          Line2D([], [], color=INK, lw=1, ls=(0, (4, 3)), label="판정이 고른 탈출로"),
          Line2D([], [], color=INK, lw=2, label="가상의 사람이 걸은 길"),
          Line2D([], [], color="#2a78d6", marker="o", ls="none", markersize=4, label="빛 자국 · 켜짐 (따라오세요)"),
@@ -134,7 +129,7 @@ def main():
          Line2D([], [], color="#62615d", lw=1, label="드론이 날아간 길")]
     fig.legend(handles=h, loc="upper left", bbox_to_anchor=(0.68, 0.86), frameon=False, fontsize=10)
     arr = str(t_now + np.timedelta64(int(round(t_end)), "m"))[11:16]
-    fig.text(0.685, 0.40, f"판정 {a.time[11:]}\n· 마지막 출발까지 {route['last_start_min']:.0f}분, 99% 여유·반응 2분 빼고 {route['slack_min']:.0f}분 남음\n"
+    fig.text(0.685, 0.53, f"판정 {a.time[11:]}: 정상\n· 마지막 출발까지 {route['last_start_min']:.0f}분, 99% 여유·반응 2분 빼고 {route['slack_min']:.0f}분 남음\n"
              f"· 탈출로 {route['length_m']}m, 꺾이는 곳 {len(route['path_ne_m']) - 2}개\n\n시뮬레이터\n· 사람 {tt[-1] / 60:.0f}분 걸어 {arr} 해안 도착\n"
              f"· 모퉁이마다 깜빡임 → 멈춤 → 새 길로\n· 빛 자국은 사람 3m 앞이라 이 축척에선 겹쳐 보임\n\n실제 물때로 검증\n· 지나간 칸 중 가장 아슬아슬한 곳도\n  지나간 뒤 {worst:.0f}분에 잠김 → "
              + ("늦지 않음" if worst > 0 else "늦음"), fontsize=10.5, color=INK, va="top", linespacing=1.55)

@@ -97,11 +97,15 @@ def main(path):
     ax.scatter([pts[0][1]], [pts[0][0]], s=80, color=INK, zorder=6)
     ax.annotate("출발", (pts[0][1], pts[0][0]), xytext=(8, -14), textcoords="offset points", fontsize=11, color=INK)
     ax.scatter([pts[-1][1]], [pts[-1][0]], s=120, color=INK, marker="*", zorder=6)
-    ax.annotate("도착(육지·피난 지점 가정)", (pts[-1][1], pts[-1][0]), xytext=(-10, 8), textcoords="offset points",
+    ax.annotate("도착(해안 가정)", (pts[-1][1], pts[-1][0]), xytext=(-10, 8), textcoords="offset points",
                 fontsize=11, color=INK, ha="right")
+    many = len(pts) - 2 > 4                  # 모퉁이가 많으면(실제 크기 탈출로) 이름만, 왼쪽에
     for k, (n, e) in enumerate(pts[1:-1]):
-        ax.annotate(f"모퉁이 {k + 1}\n깜빡임 → 멈춤 → 새 길로", (e, n), xytext=(-12, 14) if k % 2 == 0 else (12, -34),
-                    textcoords="offset points", fontsize=10.5, color=INK, ha="right" if k % 2 == 0 else "left")
+        if many:
+            ax.annotate(f"모퉁이 {k + 1}", (e, n), xytext=(-10, -4), textcoords="offset points", fontsize=10, color=INK, ha="right")
+        else:
+            ax.annotate(f"모퉁이 {k + 1}\n깜빡임 → 멈춤 → 새 길로", (e, n), xytext=(-12, 14) if k % 2 == 0 else (12, -34),
+                        textcoords="offset points", fontsize=10.5, color=INK, ha="right" if k % 2 == 0 else "left")
     off = [r for r in rows if r["phase"] == "길 이탈"]
     if off:
         far = max(rows, key=lambda r: abs(r["offset"]))
@@ -134,10 +138,10 @@ def main(path):
         for t0, t1 in blink_spans:
             mid = min(rows, key=lambda r: abs(r["t"] - (t0 + t1) / 2))
             if mid["phase"] == "길 이탈":
-                lab = "길 이탈"
+                lab = "길 이탈" if len(blink_spans) <= 5 else "이탈"
             else:
                 k += 1
-                lab = f"모퉁이 {k}"
+                lab = f"모퉁이 {k}" if len(blink_spans) <= 5 else str(k)       # 많으면 번호만 (겹치지 않게)
             a.axvspan(t0, t1, color=BLINK_C, alpha=0.13, lw=0)
             a.text((t0 + t1) / 2, 1.0, lab, transform=a.get_xaxis_transform(), ha="center", va="bottom",
                    fontsize=10, color=INK)
