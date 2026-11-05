@@ -29,7 +29,8 @@ TRAP = 10          # 분: 자기 칸이 잠기기 이만큼 넘게 전에 퇴로
 AREA = dict(name="영흥도", B=(126.38, 126.56, 37.19, 37.31), dir=os.path.join(HERE, "terrain", "youngheung"),
             key="youngheung", Z0=4.334,                      # TideBED 영흥도 평균해면 433.4cm (BADA 평균해면 기준 → 약최저저조면 기준)
             AHHW=8.72,                                       # 약최고고조면 ≈ 평균해면 + (M2+S2+K1+O1): 4.384 + 4.337 (우리 성분 2022~2024) [계산값]
-            station=("영흥도 조위관측소", 37.23861, 126.42861))
+            station=("영흥도 조위관측소", 37.23861, 126.42861),
+            focus=(126.42, 126.50, 37.20, 37.30))           # 영흥도 섬 둘레 (예시 탈출로: 출발·도착 모두 이 안)
 
 
 def load_layers(A):
@@ -174,12 +175,15 @@ def close_times(G, T, H, depth_lim):
     return tc
 
 
-def latest_start(G, tc, walk):
-    """가장 오래 열린 길: 육지에서 거꾸로. 값 = 마지막 출발 분 번호"""
+def latest_start(G, tc, walk, with_path=False):
+    """가장 오래 열린 길: 육지에서 거꾸로. 값 = 마지막 출발 분 번호
+    with_path=True면 (L, parent, order)도 줌: parent = 육지 쪽 다음 칸(평탄 번호, 해안선이면 -1), order = 확정된 순서"""
     sea, barrier = G["sea"], G["barrier"]
     ny, nx = sea.shape
     res = G["res"]
     L = np.full((ny, nx), -np.inf)
+    parent = np.full(ny * nx, -1, dtype=np.int64)
+    order = []
     heap = []
     for iy, ix in zip(*np.nonzero(barrier)):
         L[iy, ix] = np.inf
@@ -192,6 +196,7 @@ def latest_start(G, tc, walk):
         if done[iy, ix]:
             continue
         done[iy, ix] = True
+        order.append(iy * nx + ix)
         v = -negv
         for dy, dx, dd in nb:
             y, x = iy + dy, ix + dx
@@ -199,7 +204,10 @@ def latest_start(G, tc, walk):
                 cand = min(tc[y, x], v - dd * step_min)
                 if cand > L[y, x]:
                     L[y, x] = cand
+                    parent[y * nx + x] = iy * nx + ix
                     heapq.heappush(heap, (-cand, y, x))
+    if with_path:
+        return L, parent, np.array(order, dtype=np.int64)
     return L
 
 
