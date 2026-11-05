@@ -386,6 +386,8 @@ def station(obs_code, date, interval_min, start, end):
     # 필드 뜻은 공공데이터포털 명세(swagger) 기준: tdlvHgt = 예측조위, bscTdlvHgt = 실측조위
     pred = [_num(r.get("tdlvHgt")) for r in rows]
     obs = [_num(r.get("bscTdlvHgt")) for r in rows]
+    # 빠진 실측이 0.0으로 적힌 경우가 있음 (2026-03 인천송도 1분 자료 31곳) → 예측이 1m 넘는데 실측 0이면 빈칸
+    obs = [None if (o == 0 and pr is not None and pr > 100) else o for o, pr in zip(obs, pred)]
     idx = _window(ts, t0, t1)
     both = [i for i in idx if pred[i] is not None and obs[i] is not None]
     diff = [obs[i] - pred[i] for i in both]

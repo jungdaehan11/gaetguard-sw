@@ -61,6 +61,20 @@ def to_minute_grid(t, o, p):
     return T, O, P, step
 
 
+def despike(O, P, lim=30.0):
+    """튀는 값 지우기: 실측이 앞뒤 5분 중앙값과 lim cm 넘게 다르면 빈칸으로.
+    (2026년 3월 인천송도 1분 자료에 앞뒤는 600cm인데 한 분만 0.0으로 적힌 곳이 31군데 있었음)"""
+    n = len(O)
+    pad = np.r_[np.full(5, np.nan), O, np.full(5, np.nan)]
+    nb = np.stack([pad[5 + k:5 + k + n] for k in (-5, -4, -3, -2, -1, 1, 2, 3, 4, 5)])
+    with np.errstate(invalid="ignore"):
+        med = np.nanmedian(nb, axis=0)
+        bad = (np.abs(O - med) > lim) | ((O == 0) & (P > 100))
+    O = O.copy()
+    O[bad] = np.nan
+    return O, int(bad.sum())
+
+
 def smooth(x, w):
     """NaN을 빼고 가운데 이동평균"""
     ok = (~np.isnan(x)).astype(float)
@@ -164,6 +178,12 @@ def main(path):
         lines.append(s)
 
     say(f"파일: {os.path.basename(path)}  기간 {T[0]} ~ {T[-1]} ({days:.1f}일), 자료 간격 {step}분")
+    if step == 1:
+        import warnings
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", RuntimeWarning)
+            O, nbad = despike(O, P)
+        say(f"튀는 실측값(앞뒤와 30cm 넘게 다르거나 0.0) {nbad}개를 빈칸으로 처리")
     miss = np.isnan(O[::step]).mean() * 100
     say(f"실측 빠진 비율 {miss:.1f}%  (예측 빠짐 {np.isnan(P).mean() * 100:.1f}%)")
     R = O - P
