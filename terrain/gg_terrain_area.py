@@ -100,10 +100,11 @@ def crop_shp(key, zname, tmp):
         g = shapely.transform(g, lambda c: np.c_[to_ll.transform(c[:, 0], c[:, 1])])
         g = (g if g.is_valid else g.buffer(0)).intersection(bb)
         if not g.is_empty:
+            g = shapely.set_precision(g, 1e-6)          # 좌표 소수 6자리(약 0.1m)로 → 파일 크기 줄이기
             feats.append({"type": "Feature", "geometry": mapping(g),
                           "properties": {k: v for k, v in sr.record.as_dict().items() if k in keep}})
     with open(os.path.join(OUT, f"{key}_{KEY}.geojson"), "w", encoding="utf-8") as f:
-        json.dump({"type": "FeatureCollection", "features": feats}, f, ensure_ascii=False)
+        json.dump({"type": "FeatureCollection", "features": feats}, f, ensure_ascii=False, separators=(",", ":"))
     print(f"{key}: {len(feats)}개")
     return feats
 
