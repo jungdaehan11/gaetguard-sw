@@ -6,3 +6,8 @@ __pycache__/
 *.pyc
 # 기체 설정 백업은 관리자 허락 전 올리지 않음
 *.param
+# 공공데이터포털 인증키 (절대 올리지 않음)
+datago_key.txt
+*.key
+# 조위 수집 결과
+tide/
