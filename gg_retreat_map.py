@@ -175,6 +175,60 @@ def close_times(G, T, H, depth_lim):
     return tc
 
 
+def conn_height(G):
+    """칸이 바다(깊은 칸)와 물로 이어지기 시작하는 물높이: 깊은 칸에서 그 칸까지 가는 길(8방향, 바다 쪽 칸만) 위
+    높이 최댓값을 가장 작게 하는 길의 그 값. 지형만으로 정해지므로 한 번만 계산해 G에 둠"""
+    if "hconn" in G:
+        return G["hconn"]
+    Z, sea, seeds = G["Z"], G["sea"], G["seeds"]
+    ny, nx = Z.shape
+    hc = np.full((ny, nx), np.inf)
+    heap = []
+    for iy, ix in zip(*np.nonzero(seeds & sea)):
+        hc[iy, ix] = Z[iy, ix]
+        heap.append((float(Z[iy, ix]), iy, ix))
+    heapq.heapify(heap)
+    done = np.zeros((ny, nx), bool)
+    nb = [(-1, 0), (1, 0), (0, -1), (0, 1), (-1, -1), (-1, 1), (1, -1), (1, 1)]
+    while heap:
+        v, iy, ix = heapq.heappop(heap)
+        if done[iy, ix]:
+            continue
+        done[iy, ix] = True
+        for dy, dx in nb:
+            y, x = iy + dy, ix + dx
+            if 0 <= y < ny and 0 <= x < nx and sea[y, x] and not done[y, x]:
+                c = max(v, float(Z[y, x]))
+                if c < hc[y, x]:
+                    hc[y, x] = c
+                    heapq.heappush(heap, (c, y, x))
+    G["hconn"] = hc
+    return hc
+
+
+def close_times_fast(G, H, depth_lim):
+    """close_times 와 같은 결과를 빠르게 (재판정처럼 여러 번 부를 때)
+    칸이 막히는 첫 분 = 물높이가 처음으로 '이어지는 높이 초과' 이면서 '칸 높이 + 통행 불가 깊이 이상' 인 분.
+    두 조건 모두 물높이가 일정 값 이상이면 참이므로, 지금까지의 최고 물높이(누적 최댓값)로 찾으면 됨"""
+    hc = conn_height(G)
+    Z = G["Z"]
+    H = np.asarray(H, float)
+    run = np.maximum.accumulate(H)
+    i1 = np.searchsorted(run, hc.ravel(), side="right")                   # H > hc
+    z = Z.ravel()
+    i2 = np.searchsorted(run, z + depth_lim, side="left")                 # H ≥ Z + 깊이
+    n = len(run)
+    for _ in range(3):                    # 소수점 반올림 차이(H − Z = 0.2999…)까지 close_times 와 똑같이 맞춤
+        up = (i2 < n) & (run[np.minimum(i2, n - 1)] - z < depth_lim)
+        dn = (i2 > 0) & (run[np.maximum(i2 - 1, 0)] - z >= depth_lim)
+        i2 = i2 + up - dn
+    i = np.maximum(i1, i2).astype(float)
+    i[i >= len(H)] = np.inf
+    tc = i.reshape(Z.shape)
+    tc[~G["sea"]] = np.inf
+    return tc
+
+
 def latest_start(G, tc, walk, with_path=False):
     """가장 오래 열린 길: 육지에서 거꾸로. 값 = 마지막 출발 분 번호
     with_path=True면 (L, parent, order)도 줌: parent = 육지 쪽 다음 칸(평탄 번호, 해안선이면 -1), order = 확정된 순서"""
