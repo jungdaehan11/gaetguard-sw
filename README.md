@@ -15,6 +15,7 @@
 | `old/gg_sitl_lead.py` | v2: 직선 길, 사람 7m 앞 유지 |
 | `gg_tide_fetch.py` | 위경도 지점의 예측 조위(TideBED)를 받아 CSV로 저장 (인증키는 `datago_key.txt`, 저장소에 안 올림) |
 | `gg_station_fetch.py` | 관측소(인천송도·인천) 실측·예측 조위를 날짜별로 받아 CSV 하나에 이어 저장 (끊겨도 이어 받기) |
+| `terrain/gg_terrain_siheung.py` | BADA2024 수심·갯골·해안선을 시흥 범위로 잘라 CSV·GeoJSON·지도 PNG로 (원본 파일은 저장소에 안 올림) |
 | `tide_mcp/` | 조위 커넥터: Claude가 조위 API를 직접 부르게 하는 MCP 서버 (배포 방법은 `tide_mcp/README.md`) |
 | `docs/` | 시뮬레이터 결과 그림 (ArduCopter 3.6.12 SITL) |
 

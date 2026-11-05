@@ -12,3 +12,7 @@ datago_key.txt
 # 조위 수집 결과
 tide/
 mcp_secret.txt
+# 지형 원본·결과 (용량 큼, 공공데이터 그대로)
+terrain/*.nc
+terrain/*.zip
+terrain/siheung/
