@@ -11,3 +11,4 @@ datago_key.txt
 *.key
 # 조위 수집 결과
 tide/
+mcp_secret.txt

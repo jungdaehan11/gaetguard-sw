@@ -13,6 +13,8 @@
 | `gg_plot_v4.py` | v4 비행 기록(CSV) → 결과 그림(PNG) |
 | `old/gg_lead_v3.py`, `old/gg_plot_v3.py` | v3: 빛 신호 3가지(켜짐·깜빡임·좌우 쓸기) |
 | `old/gg_sitl_lead.py` | v2: 직선 길, 사람 7m 앞 유지 |
+| `gg_tide_fetch.py` | 위경도 지점의 예측 조위(TideBED)를 받아 CSV로 저장 (인증키는 `datago_key.txt`, 저장소에 안 올림) |
+| `tide_mcp/` | 조위 커넥터: Claude가 조위 API를 직접 부르게 하는 MCP 서버 (배포 방법은 `tide_mcp/README.md`) |
 | `docs/` | 시뮬레이터 결과 그림 (ArduCopter 3.6.12 SITL) |
 
 v4(원호로 모퉁이 돌기)는 git 기록에 남아 있습니다.
