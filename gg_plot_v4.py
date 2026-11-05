@@ -76,12 +76,17 @@ def main(path):
     total = sum(math.dist(a, b) for a, b in zip(pts, pts[1:]))
     fig = plt.figure(figsize=(15, 9.2), facecolor="white")
     fig.text(0.04, 0.955, f"갯가드 빛길 안내 {meta.get('version', 'v4')} · 빛 자국을 사람 3m 앞 길 위에", fontsize=18, weight="bold", color=INK)
+    pi = meta.get("path_info") or {}
+    src = ""
+    if pi.get("decided_at"):
+        src = (f"\n길: {pi['decided_at']} 판정으로 계산한 영흥도 탈출로({pi['original_length_m']:.0f}m)"
+               + (f"를 모양 그대로 {total:.0f}m로 줄임 (배율 {pi['scale']})" if pi.get("scale", 1) < 0.999 else " 실제 크기"))
     fig.text(0.04, 0.935, f"가상의 사람이 꺾인 길 {total:.0f}m를 걸음 · 고도 {meta['alt']:.0f}m · LED {meta['led_tilt']:.0f}° 기울임 "
-             f"→ 빛 자국은 드론 앞 {meta['r_spot']:.1f}m\n끝난 이유: {meta['end_reason']}",
+             f"→ 빛 자국은 드론 앞 {meta['r_spot']:.1f}m{src}\n끝난 이유: {meta['end_reason']}",
              fontsize=11.5, color=INK2, va="top", linespacing=1.5)
 
     # ① 위에서 본 모습
-    ax = fig.add_axes([0.03, 0.06, 0.40, 0.78])
+    ax = fig.add_axes([0.03, 0.06, 0.40, 0.74])
     corridor(ax, pts, meta["offpath_m"])
     ax.plot([r["drone_e"] for r in rows], [r["drone_n"] for r in rows], color=DRONE, lw=1.2, zorder=2)
     for sig, c, mk in (("켜짐", ON_C, "o"), ("깜빡임", BLINK_C, "s")):

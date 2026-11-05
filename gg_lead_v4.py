@@ -30,6 +30,8 @@ v3에서 바뀐 점 (팀 결정 2026-11-04)
   python gg_lead_v4.py                         # 시뮬레이터 (기본 tcp:127.0.0.1:5762)
   python gg_lead_v4.py tcp:127.0.0.1:5763      # 5762가 안 되면
   python gg_lead_v4.py COM5 --light-test       # 땅에서 빛만 시험: 시동 안 걺 (프로펠러 빼고, USB만)
+  python gg_lead_v4.py --path-json tide\\판정_youngheung_2025-09-11_탈출로_0207.json --fit 55   # 계산된 탈출로 모양을 55m로 줄여서
+  python gg_lead_v4.py --path-json ... --range 2500     # 시뮬레이터에서 실제 크기 그대로 (울타리 늘림, 시뮬레이터만)
   끝나면: python gg_plot_v4.py gg_log_....csv  # 결과 그림
 
 주의
@@ -69,6 +71,7 @@ R_SPOT = ALT * math.tan(math.radians(LED_TILT_DEG))   # 드론 바로 아래 ↔
 
 # 길: 출발점 기준 (북쪽 m, 동쪽 m). 북 25m → 동 15m → 북 15m (총 55m)
 PATH = [(0.0, 0.0), (25.0, 0.0), (25.0, 15.0), (40.0, 15.0)]
+PATH_INFO = dict(source="기본 시험 길")        # --path-json 으로 탈출로를 넣으면 바뀜
 
 # 가상 사람 시나리오 (시험용, 길 위 거리 기준)
 REST_S, REST_LEN = 10.0, 8.0      # 10m 지점에서 8초 쉼 → 빛 자국·드론도 기다리는지
@@ -82,6 +85,46 @@ POS_VEL_YAW = 0b0000100111000000
 ON, BLINK, OFF = "켜짐", "깜빡임", "꺼짐"
 MEANING = {ON: "따라오세요", BLINK: "빛 자국까지 와서 멈추세요", OFF: "-"}
 FOLLOW, HOLD, OFFPATH_P, ARRIVED = "따라가기", "모퉁이 대기", "길 이탈", "도착"
+
+
+def _dp(pts, tol):
+    """더글러스-포커: tol(m)보다 작은 굴곡은 펴기"""
+    if len(pts) < 3:
+        return list(pts)
+    (n1, e1), (n2, e2) = pts[0], pts[-1]
+    L = math.hypot(n2 - n1, e2 - e1) or 1e-9
+    dmax, imax = 0.0, 0
+    for i, (n, e) in enumerate(pts[1:-1], 1):
+        d = abs((n2 - n1) * (e1 - e) - (n1 - n) * (e2 - e1)) / L
+        if d > dmax:
+            dmax, imax = d, i
+    if dmax <= tol:
+        return [pts[0], pts[-1]]
+    return _dp(pts[:imax + 1], tol)[:-1] + _dp(pts[imax:], tol)
+
+
+def load_path_json(fn, fit=None, min_leg=8.0):
+    """gg_decide.py 가 만든 탈출로(path_ne_m: 출발점 기준 북·동 m)를 읽음.
+    fit(m)을 주면 전체 길이를 그만큼으로 줄이고(모양 유지), 줄인 뒤 min_leg보다 짧은 구간은 합침 (시연장 크기용)"""
+    with open(fn, encoding="utf-8") as f:
+        info = json.load(f)
+    pts = [tuple(map(float, p)) for p in info["path_ne_m"]]
+    L0 = sum(math.dist(a, b) for a, b in zip(pts, pts[1:]))
+    k = 1.0
+    if fit:
+        k = fit / L0
+        pts = [(n * k, e * k) for n, e in pts]
+        pts = _dp(pts, 1.0)
+        changed = True
+        while changed and len(pts) > 2:          # 짧은 구간 없애기 (가운데 점부터)
+            changed = False
+            for i in range(1, len(pts) - 1):
+                if min(math.dist(pts[i - 1], pts[i]), math.dist(pts[i], pts[i + 1])) < min_leg:
+                    del pts[i]
+                    changed = True
+                    break
+    return pts, dict(source=os.path.basename(fn), scale=round(k, 4), original_length_m=round(L0, 1),
+                     start_lat=info.get("start_lat"), start_lon=info.get("start_lon"), decided_at=info.get("time"))
 
 
 # ───────── 길 계산 ─────────
@@ -625,7 +668,7 @@ def fly(veh, log_path):
             w.writeheader()
             w.writerows(rows)
         with open(log_path.replace(".csv", "_path.json"), "w", encoding="utf-8") as f:
-            json.dump(dict(version="v4.1", path=PATH, offpath_m=OFFPATH_M, spot_ahead=SPOT_AHEAD, alt=ALT,
+            json.dump(dict(version="v4.1", path=PATH, path_info=PATH_INFO, offpath_m=OFFPATH_M, spot_ahead=SPOT_AHEAD, alt=ALT,
                            r_spot=round(R_SPOT, 2), led_tilt=LED_TILT_DEG, corners=path.corners,
                            events=events, end_reason=end_reason), f, ensure_ascii=False)
         summary(rows, events, light, veh, end_reason, log_path)
@@ -673,7 +716,31 @@ def main():
     ap.add_argument("--baud", type=int, default=115200)
     ap.add_argument("--light-test", action="store_true", help="시동 없이 빛(릴레이)만 시험")
     ap.add_argument("--real", action="store_true", help="실기체 비행 허용 (설정 수정·허락·안전 조종자 준비 뒤에만)")
+    ap.add_argument("--path-json", help="gg_decide.py 탈출로 파일 (path_ne_m)을 길로 씀")
+    ap.add_argument("--fit", type=float, help="탈출로 전체 길이를 이 m로 줄임 (모양 유지, 시연장 크기)")
+    ap.add_argument("--range", type=float, help="울타리 거리(m) 바꾸기 — 시뮬레이터 연결에서만")
     a = ap.parse_args()
+
+    global PATH, MAX_RANGE, MAX_TIME, REST_S, DRIFT_S, PATH_INFO
+    if a.path_json:
+        PATH, PATH_INFO = load_path_json(a.path_json, a.fit)
+        L = sum(math.dist(p, q) for p, q in zip(PATH, PATH[1:]))
+        legs = [math.dist(p, q) for p, q in zip(PATH, PATH[1:])]
+        REST_S = 0.18 * L                                   # 기본 길(55m)에서 10m 지점 = 18%
+        DRIFT_S = max(L - 11.0, L - 0.6 * legs[-1])         # 마지막 곧은 길에서 옆으로 벗어나기
+        MAX_TIME = int(L / WALK * 1.35 + 30 * len(PATH) + 120)
+        print(f"길: {a.path_json} → {len(PATH)}점, {L:.0f}m (원래 {PATH_INFO['original_length_m']:.0f}m, 배율 {PATH_INFO['scale']}), "
+              f"최대 시간 {MAX_TIME}초")
+    if a.range:
+        if not is_local(a.addr) or a.real:
+            print("울타리 거리는 시뮬레이터에서만 바꿀 수 있습니다.")
+            return
+        MAX_RANGE = a.range
+        print(f"울타리 {MAX_RANGE:.0f}m (시뮬레이터)")
+    far = max(math.hypot(n, e) for n, e in PATH)
+    if far > MAX_RANGE - 5:
+        print(f"길 끝이 출발점에서 {far:.0f}m → 울타리 {MAX_RANGE:.0f}m 안에 안 들어옵니다. --fit 으로 줄이거나 (시뮬레이터면) --range 를 늘리세요.")
+        return
 
     if not a.light_test and not is_local(a.addr) and not a.real:
         print("실기체 연결로 보여 비행을 막았습니다. 땅에서 빛만 시험하려면 --light-test 를 붙이세요.")

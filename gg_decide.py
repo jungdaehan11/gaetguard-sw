@@ -164,7 +164,7 @@ def decide_at(G, T, O, P, t_now, a):
                wait=int((dec == 3).sum()), escape_fail=int(esc_fail.sum()), refuge_fail=ref_fail,
                true_escape_possible=int((walk_now & (Lt >= REACT)).sum()),
                missed_escape=int((walk_now & ~escape & (Lt >= REACT + 30)).sum()))
-    return res, dict(dec=dec, slack=slack, Lf=Lf, parent=parent, tcf=tcf, Hf=Hf, Ht=Ht, Tw=Tw, esc_fail=esc_fail)
+    return res, dict(dec=dec, slack=slack, Lf=Lf, parent=parent, tcf=tcf, tct=tct, Hf=Hf, Ht=Ht, Tw=Tw, esc_fail=esc_fail)
 
 
 def _sun_elev(T, lat, lon):
