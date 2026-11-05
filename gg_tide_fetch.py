@@ -32,7 +32,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
-from datetime import datetime
+from datetime import datetime, timedelta
 
 URL = "https://apis.data.go.kr/1192136/tidebed/GetTidebedApiService"
 
@@ -93,22 +93,53 @@ def fetch(key, lat, lon, date, minute):
     return rows
 
 
-def extrema(times, hs, win):
-    """고조·저조: 앞뒤 win 개 안에서 가장 높거나 낮은 점"""
+def extrema(ts, hs):
+    """고조·저조 찾기 → [(구분, 시각, 높이)]
+    - 앞뒤 약 30분(최소 3칸) 안에서 가장 높거나 낮은 점 (자료 간격은 시각에서 계산)
+    - 같은 값이 이어지면(높이가 정수 cm라 꼭대기가 평평함) 그 구간의 가운데 시각
+    - 한 점이면 앞뒤 점으로 포물선을 그려 꼭짓점 시각 (자료 간격보다 촘촘하게)
+    - 하루의 처음·끝 30분 안은 잘린 구간이라 빼고 봄"""
+    pts = sorted((t, h) for t, h in zip(ts, hs) if t is not None and h is not None)
+    if len(pts) < 7:
+        return []
+    ts = [p[0] for p in pts]
+    hs = [p[1] for p in pts]
+    gaps = sorted((b - a).total_seconds() / 60 for a, b in zip(ts, ts[1:]))
+    step = max(gaps[len(gaps) // 2], 1e-6)
+    win = max(3, int(round(30 / step)))
+    n = len(hs)
     out = []
-    for i in range(win, len(hs) - win):          # 하루의 처음·끝은 빼고 (잘린 구간을 극값으로 오인)
-        lo, hi = i - win, i + win + 1
-        seg = hs[lo:hi]
+    i = win
+    while i < n - win:
+        seg = hs[i - win:i + win + 1]
         if hs[i] == max(seg) and hs[i] > min(seg):
-            out.append(("고조", times[i], hs[i]))
+            kind = "고조"
         elif hs[i] == min(seg) and hs[i] < max(seg):
-            out.append(("저조", times[i], hs[i]))
-    # 같은 극값이 이어지면 첫 번째만
-    ded = []
-    for e in out:
-        if not ded or ded[-1][0] != e[0]:
-            ded.append(e)
-    return ded
+            kind = "저조"
+        else:
+            i += 1
+            continue
+        j = i
+        while j + 1 < n and hs[j + 1] == hs[i]:
+            j += 1
+        if j > i:
+            t = ts[i] + (ts[j] - ts[i]) / 2
+        else:
+            a, b, c = hs[i - 1], hs[i], hs[i + 1]
+            den = a - 2 * b + c
+            off = max(-0.5, min(0.5, 0.5 * (a - c) / den)) if den else 0.0
+            t = ts[i] + timedelta(minutes=off * step)
+        t = (t + timedelta(seconds=30)).replace(second=0, microsecond=0)
+        out.append((kind, t, hs[i]))
+        i = j + win
+    return out
+
+
+def fnum(v, nd):
+    try:
+        return f"{float(v):.{nd}f}"
+    except (TypeError, ValueError):
+        return v
 
 
 def parse_dt(s):
@@ -151,14 +182,13 @@ def main():
             w.writerows(rows)
         r0 = rows[0]
         print(f"[{name}] 위도 {lat}, 경도 {lon} → 기준항 {r0.get('obsvtrNm')}, "
-              f"조시차 {r0.get('josi')}, 조고비 {r0.get('jogo')}, 평균해면 {r0.get('msl')}cm, {len(rows)}행")
+              f"조시차 {r0.get('josi')}, 조고비 {fnum(r0.get('jogo'), 4)}, 평균해면 {fnum(r0.get('msl'), 1)}cm, {len(rows)}행")
         # 고조·저조 비교
-        win = max(1, 30 // max(a.min, 1))
         ts = [parse_dt(r.get("slctdDt")) for r in rows]
         tr = [parse_dt(r.get("obsrvnDt")) for r in rows]
         hs = [float(r.get("slctdHgt") or 0) for r in rows]
         hr = [float(r.get("obsrvnHgt") or 0) for r in rows]
-        es, er = extrema(ts, hs, win), extrema(tr, hr, win)
+        es, er = extrema(ts, hs), extrema(tr, hr)
         for kind, t, h in es:
             ref = min((x for x in er if x[0] == kind and x[1] and t),
                       key=lambda x: abs((x[1] - t).total_seconds()), default=None)

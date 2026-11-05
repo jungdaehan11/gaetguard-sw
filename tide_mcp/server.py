@@ -240,28 +240,45 @@ def _r(v, n=1):
     return None if v is None else round(v, n)
 
 
-def _extrema(ts, hs, step_min):
-    """고조·저조: 앞뒤 약 30분(또는 3칸) 안에서 가장 높거나 낮은 점. 같은 값이 이어지면 가운데.
-    하루의 처음·끝 30분 안은 잘린 구간이라 빼고 봄."""
-    win = max(3, 30 // max(step_min, 1))
+def _extrema(ts, hs):
+    """고조·저조 찾기 → [(구분, 시각, 높이)]
+    - 앞뒤 약 30분(최소 3칸) 안에서 가장 높거나 낮은 점 (자료 간격은 시각에서 계산)
+    - 같은 값이 이어지면(높이가 정수 cm라 꼭대기가 평평함) 그 구간의 가운데 시각
+    - 한 점이면 앞뒤 점으로 포물선을 그려 꼭짓점 시각 (자료 간격보다 촘촘하게)
+    - 하루의 처음·끝 30분 안은 잘린 구간이라 빼고 봄"""
+    pts = sorted((t, h) for t, h in zip(ts, hs) if t is not None and h is not None)
+    if len(pts) < 7:
+        return []
+    ts = [p[0] for p in pts]
+    hs = [p[1] for p in pts]
+    gaps = sorted((b - a).total_seconds() / 60 for a, b in zip(ts, ts[1:]))
+    step = max(gaps[len(gaps) // 2], 1e-6)
+    win = max(3, int(round(30 / step)))
     n = len(hs)
-    cand = []
-    for i in range(win, n - win):
-        if hs[i] is None or ts[i] is None:
-            continue
-        seg = [h for h in hs[i - win:i + win + 1] if h is not None]
+    out = []
+    i = win
+    while i < n - win:
+        seg = hs[i - win:i + win + 1]
         if hs[i] == max(seg) and hs[i] > min(seg):
-            cand.append(("고조", i))
+            kind = "고조"
         elif hs[i] == min(seg) and hs[i] < max(seg):
-            cand.append(("저조", i))
-    out, group = [], []
-    for c in cand + [(None, None)]:
-        if group and (c[0] != group[-1][0] or c[1] - group[-1][1] > win):
-            i = group[len(group) // 2][1]
-            out.append((group[0][0], i))
-            group = []
-        if c[0] is not None:
-            group.append(c)
+            kind = "저조"
+        else:
+            i += 1
+            continue
+        j = i
+        while j + 1 < n and hs[j + 1] == hs[i]:
+            j += 1
+        if j > i:
+            t = ts[i] + (ts[j] - ts[i]) / 2
+        else:
+            a, b, c = hs[i - 1], hs[i], hs[i + 1]
+            den = a - 2 * b + c
+            off = max(-0.5, min(0.5, 0.5 * (a - c) / den)) if den else 0.0
+            t = ts[i] + timedelta(minutes=off * step)
+        t = (t + timedelta(seconds=30)).replace(second=0, microsecond=0)
+        out.append((kind, t, hs[i]))
+        i = j + win
     return out
 
 
@@ -295,17 +312,15 @@ def point_summary(lat, lon, date):
     tr = [_dt(r.get("obsrvnDt")) for r in rows]
     hs = [_num(r.get("slctdHgt")) for r in rows]
     hr = [_num(r.get("obsrvnHgt")) for r in rows]
-    es = _extrema(ts, hs, 1)
-    er = _extrema(tr, hr, 1)
     events = []
-    for kind, i in es:
-        e = {"구분": kind, "지점_시각": ts[i].strftime("%H:%M"), "지점_높이_cm": _r(hs[i], 0)}
-        refs = [j for k, j in er if k == kind]
+    er = _extrema(tr, hr)
+    for kind, t, h in _extrema(ts, hs):
+        e = {"구분": kind, "지점_시각": t.strftime("%H:%M"), "지점_높이_cm": _r(h, 0)}
+        refs = [(t2, h2) for k, t2, h2 in er if k == kind and abs((t2 - t).total_seconds()) < 4 * 3600]
         if refs:
-            j = min(refs, key=lambda j: abs((tr[j] - ts[i]).total_seconds()))
-            if abs((tr[j] - ts[i]).total_seconds()) < 4 * 3600:
-                e.update({"기준항_시각": tr[j].strftime("%H:%M"), "기준항_높이_cm": _r(hr[j], 0),
-                          "시각차_분(지점-기준항)": round((ts[i] - tr[j]).total_seconds() / 60)})
+            t2, h2 = min(refs, key=lambda x: abs((x[0] - t).total_seconds()))
+            e.update({"기준항_시각": t2.strftime("%H:%M"), "기준항_높이_cm": _r(h2, 0),
+                      "시각차_분(지점-기준항)": round((t - t2).total_seconds() / 60)})
         events.append(e)
     valid = [h for h in hs if h is not None]
     return {
@@ -313,8 +328,8 @@ def point_summary(lat, lon, date):
         "날짜": f"{d[:4]}-{d[4:6]}-{d[6:]}",
         "기준항": r0.get("obsvtrNm"),
         "조시차(API 값)": r0.get("josi"),
-        "조고비(API 값)": r0.get("jogo"),
-        "평균해면_cm(API 값)": r0.get("msl"),
+        "조고비(API 값)": _r(_num(r0.get("jogo")), 4),
+        "평균해면_cm(API 값)": _r(_num(r0.get("msl")), 1),
         "고조저조": events,
         "지점_하루최고_cm": _r(max(valid), 0) if valid else None,
         "지점_하루최저_cm": _r(min(valid), 0) if valid else None,
