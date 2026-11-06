@@ -3,7 +3,7 @@
   예측: 우리 조석 성분 (data/영흥도_조석성분_2022-2024.pkl, gg_tide_harmonic.py --save-coef) → 인터넷 없이 6시간 앞까지
   보정: 매분 관측소 실측(공공데이터포털 조위관측소 API, 영흥도 DT_0043)의 최근 10분 평균 − 같은 때 우리 예측
         (검증한 방식 그대로: 5장 높이 보정, 99%·95% 여유도 이 방식으로 뽑은 값)
-  실측이 끊기면: 마지막 보정값을 30분까지 씀, 그 뒤엔 보정 0 + "실측 없음" 표시 [가정]
+  실측은 약 10분 늦게 올라옴(2026-11-06 확인) → 마지막으로 들어온 10분으로 보정, 그 실측이 30분보다 오래되면 보정 0 + "실측 없음" [가정]
   실측 1분 자료에 빈 값이 0.0으로 적힌 경우(예측이 1m 넘는데 실측 0)는 빼고 셈 (커넥터와 같은 규칙)
 
 실행
@@ -166,7 +166,7 @@ class LiveWater:
         self.G, self.src, self.depth, self.horizon = G, source, depth, horizon
         self.t0 = np.datetime64(t_start, "m")
         self.cache, self.ls_cache = {}, {}
-        self.last_off, self.last_off_t, self.status = None, None, ""
+        self.last_off, self.last_off_t, self.status, self.lag_min = None, None, "", None
         self.lat_c = float(G["GY"].mean()) if G is not None else 37.24
         self.lon_c = float(G["GX"].mean()) if G is not None else 126.45
 
@@ -177,21 +177,23 @@ class LiveWater:
             return utide.reconstruct(np.asarray(tt).astype("datetime64[s]"), self.coef, verbose=False).h
 
     def offset_at(self, tm):
-        """tm(분)까지 10분 실측 평균 − 같은 때 우리 예측 (cm). 끊기면 마지막 값 30분, 그 뒤 0"""
+        """tm(분)까지 들어온 실측 중 가장 최근 10분 평균 − 같은 때 우리 예측 (cm).
+        공공데이터포털 실측은 약 10분 늦게 올라옴(2026-11-06 확인) → 'tm 앞 10분'이 아니라 '마지막으로 들어온 10분'을 씀.
+        마지막 실측이 HOLD_OFF_MIN분보다 오래되면 보정 0 + '실측 없음'"""
         try:
-            ts, ob = self.src.obs(tm - np.timedelta64(9, "m"), tm)
+            ts, ob = self.src.obs(tm - np.timedelta64(HOLD_OFF_MIN, "m"), tm)
         except RuntimeError as e:
             ts, ob = np.array([], "datetime64[m]"), np.array([])
             self.status = str(e)
         if len(ts):
-            off = float(np.mean(ob - self.pred(ts)))
-            self.last_off, self.last_off_t = off, tm
-            self.status = f"실측 {len(ts)}분 (마지막 {str(ts[-1])[11:16]})"
+            k = ts >= ts[-1] - np.timedelta64(9, "m")
+            off = float(np.mean(ob[k] - self.pred(ts[k])))
+            self.last_off, self.last_off_t = off, ts[-1]
+            self.lag_min = int((tm - ts[-1]) / np.timedelta64(1, "m"))
+            self.status = f"실측 {int(k.sum())}분 (마지막 {str(ts[-1])[11:16]}, {self.lag_min}분 늦음)"
             return off
-        if self.last_off is not None and (tm - self.last_off_t) <= np.timedelta64(HOLD_OFF_MIN, "m"):
-            self.status = f"실측 끊김 → {str(self.last_off_t)[11:16]} 보정값 씀"
-            return self.last_off
-        self.status = "실측 없음 → 보정 0"
+        self.lag_min = None
+        self.status = f"실측 없음(최근 {HOLD_OFF_MIN}분) → 보정 0"
         return 0.0
 
     def forecast(self, tm, n=None):
