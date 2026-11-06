@@ -9,6 +9,8 @@
 입력: tide\\badanuri_<관측소>_1m.csv (gg_badanuri_parse.py 결과)
 실행: python gg_tide_harmonic.py tide\\badanuri_영흥도_1m.csv --train 2021 2023 --test 2024
      python gg_tide_harmonic.py tide\\badanuri_영흥도_1m.csv --train 2022 2024 --test --api tide\\station_DT_0043_1m.csv
+     python gg_tide_harmonic.py tide\\badanuri_영흥도_1m.csv --train 2022 2024 --test --save-coef data\\영흥도_조석성분_2022-2024.pkl
+       (--save-coef: 실시간 판정 gg_live_tide.py 가 쓰는 조석 성분 파일. 인터넷 없이 예측 가능)
 필요: pip install utide numpy
 """
 import argparse
@@ -121,6 +123,7 @@ def main():
     ap.add_argument("--test", nargs="*", type=int, default=[2024])
     ap.add_argument("--lat", type=float, default=37.2386)
     ap.add_argument("--api", help="gg_station_fetch.py 결과 CSV (실측+국립해양조사원 예측) → 같은 시각에 우리 예측과 비교")
+    ap.add_argument("--save-coef", help="뽑은 조석 성분을 pickle로 저장 (gg_live_tide.py 용)")
     a = ap.parse_args()
     t, h = load(a.csv)
     yr = t.astype("datetime64[Y]").astype(int) + 1970
@@ -135,6 +138,14 @@ def main():
     print(f"평균해면(학습 기간) {coef['mean']:.1f}cm, 성분 {len(coef['name'])}개. 큰 순서:")
     print("   " + ", ".join(f"{coef['name'][i]} {coef['A'][i]:.1f}cm/{coef['g'][i]:.0f}°" for i in order[:12]))
     base = os.path.splitext(a.csv)[0]
+    if a.save_coef:
+        import pickle
+        os.makedirs(os.path.dirname(os.path.abspath(a.save_coef)), exist_ok=True)
+        with open(a.save_coef, "wb") as f:
+            pickle.dump(dict(coef=coef, train=a.train, lat=a.lat, source=os.path.basename(a.csv),
+                             note="시각 = 한국 시각(KST, 시간대 없는 datetime64). utide.reconstruct(t, coef) 로 예측 (cm)",
+                             utide_version=getattr(utide, "__version__", "?")), f)
+        print(f"조석 성분 저장: {a.save_coef}")
     with open(base + f"_성분_{a.train[0]}-{a.train[1]}.csv", "w", newline="", encoding="utf-8-sig") as f:
         w = csv.writer(f)
         w.writerow(["name", "amp_cm", "phase_deg", "freq_cph"])
