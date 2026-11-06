@@ -15,6 +15,7 @@
                              다음 칸이 닿기 전에 잠기면 그 자리에서 멈춤 → 구조품 투하 (그 자리가 잠기기 전)
         새 길이 지금 길과 같으면 사람을 멈춰 세우지 않음(반응 2분 없음)
         위험도는 올라가기만 함 (한 번 신고하면 취소는 관제가 함)
+        걸으라고 했는데 5분 넘게 안 움직이면(펄에 빠짐 등) 바로 신고 (2026-11-06 팀 결정)
   검사(30초마다): 남은 길을 잰 속도로 걸을 때 (마지막 출발 여유) − (그 단계 여유) ≥ 0 이면 그대로
         갈 수 있는 데까지 가는 중이면: 예보로 물에 막히는 때가 정했을 때보다 5분 넘게 당겨지지 않으면 그대로
         안내 중인 길에서 OFF_M 넘게 벗어나면 그 자리에서 다시 계산
@@ -46,6 +47,7 @@ SPEED_MIN_T = 1.0   # 분: 이보다 짧게 쟀으면 앞서 잰 속도(처음�
 STILL_M = 3.0       # m: 30초에 이보다 덜 움직였으면 "서 있었음" (속도 계산에서 뺌)
 OFF_M = 30.0        # m: 안내 중인 길에서 이만큼 넘게 벗어나면 그 자리에서 다시 계산 [가정]
 V_FLOOR = 0.1       # m/s: 걸음 속도 아래 한계 (0으로 나누지 않게)
+STUCK_MIN = 5.0     # 분: 걸으라고 했는데 이만큼 넘게 안 움직이면 신고 (펄에 빠짐 등, 2026-11-06 팀 결정)
 T_END = 330.0       # 분: 판정 뒤 이만큼까지만 따라감 (물 계산 길이 360분 안)
 LEVEL_TABLE = {"99%": gd.MARGIN, "95%": gd.MARGIN95}
 TIER_NAME = {0: "정상", 1: "주의", 2: "신고"}
@@ -223,6 +225,19 @@ class Redecider:
             self.v_last = float(np.clip(dist / (tm * 60.0), V_FLOOR, self.walk))
         return self.v_last
 
+    def still_minutes(self):
+        """걸으라고 한 시간 중, 마지막으로 움직인 뒤 계속 서 있던 시간(분). 멈추라고 한 시간은 세지 않음"""
+        still = 0.0
+        for (t1, p1), (t2, p2) in zip(self.hist[-2::-1], self.hist[:0:-1]):
+            dur = t2 - t1
+            inst = dur - sum(max(0.0, min(t2, b) - max(t1, a)) for a, b in self.waits)
+            if inst <= 1e-9:
+                continue
+            if float(np.hypot(*(np.asarray(p2) - np.asarray(p1)))) >= STILL_M * dur / TICK:
+                break
+            still += inst
+        return still
+
     # ---- 안내 중인 길 위 어디쯤인가 (뒤로 가지 않게, 앞 150m 안에서)
     def project(self, P, pos):
         pts, s = P["pts"], P["s"]
@@ -308,6 +323,11 @@ class Redecider:
             self.send(t, pos)
             return P
         v = self.speed()
+        if self.tier < 2 and self.still_minutes() >= STUCK_MIN:          # 걸으라 했는데 3분 넘게 안 움직임 → 신고
+            self.tier = 2
+            self.caution = t if self.caution is None else self.caution
+            self.alert = t
+            self._log(t, pos, v, dict(s=P["s_last"], d=0), f"걸으라고 했는데 {STUCK_MIN:.0f}분 넘게 안 움직임 → 신고 [신고: 해경·위치 전송]")
         ok, info = self.check(t, pos, v)
         if info["s"] >= P["s"][-1] - 5.0 and info["d"] <= OFF_M and self.bar[int(P["cells"][-1])]:
             P["mode"] = "도착"
