@@ -181,11 +181,11 @@ class LiveWater:
         공공데이터포털 실측은 약 10분 늦게 올라옴(2026-11-06 확인) → 'tm 앞 10분'이 아니라 '마지막으로 들어온 10분'을 씀.
         마지막 실측이 HOLD_OFF_MIN분보다 오래되면 보정 0 + '실측 없음'"""
         try:
-            ts, ob = self.src.obs(tm - np.timedelta64(HOLD_OFF_MIN, "m"), tm)
+            ts, ob = self.src.obs(tm - np.timedelta64(HOLD_OFF_MIN + 9, "m"), tm)
         except RuntimeError as e:
             ts, ob = np.array([], "datetime64[m]"), np.array([])
             self.status = str(e)
-        if len(ts):
+        if len(ts) and ts[-1] >= tm - np.timedelta64(HOLD_OFF_MIN, "m"):
             k = ts >= ts[-1] - np.timedelta64(9, "m")
             off = float(np.mean(ob[k] - self.pred(ts[k])))
             self.last_off, self.last_off_t = off, ts[-1]

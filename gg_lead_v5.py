@@ -34,6 +34,7 @@ import queue
 import sys
 import threading
 import time
+from datetime import datetime
 
 import numpy as np
 
@@ -142,7 +143,8 @@ class EngineThread(threading.Thread):
         return dict(t=t, id=P["id"], mode=P["mode"], level=P["level"], cont=P["cont"], t_set=P["t_set"], pts=P["pts"].copy(),
                     tier=e.tier, caution=e.caution, alert=e.alert, drop=None if e.drop is None else (e.drop[0], e.drop[1].copy()),
                     stuck_on=e.stuck_on, event=last.get("event", "") if last.get("t_min") == round(t, 2) else "",
-                    v_est=last.get("v_est"), slack=last.get("slack_min"), tx=tx)
+                    v_est=last.get("v_est"), slack=last.get("slack_min"), tx=tx,
+                    tide_off=round(float(e.W.at(t)[2]), 1), tide_status=getattr(e.W, "status", "재생(실측 CSV)"))
 
     def run(self):
         while True:
@@ -277,7 +279,7 @@ def fly(veh, cfg, log_path):
         time.sleep(0.05)
     print(f"안내 시작: 판정 {cfg['t0_text']} · 처음 판정 {P0['mode']} {P0['level']} (남은 여유 {P0['info'].get('slack', float('nan')):.1f}분), "
           f"판정 길 {P0['s'][-1]:.0f}m → 드론 길 {path.length:.0f}m 꺾이는 곳 {len(path.corners)}개 · 사람 {beh['name']} · "
-          f"사람 위치 {'카메라' if cfg['cam'] else '가상의 사람 실제 위치'}")
+          f"사람 위치 {'카메라' if cfg['cam'] else '가상의 사람 실제 위치'} · 물 보정 {eng.W.at(0.0)[2]:+.1f}cm ({getattr(eng.W, 'status', '재생')})")
 
     eth = EngineThread(eng)
     eth.start()
@@ -339,6 +341,7 @@ def fly(veh, cfg, log_path):
                   alert=None if snap["alert"] is None else clock_text(snap["alert"] * 60),
                   drop=[dict(clock=clock_text(d["t"]), lat=round(to_ll(*d["pos"])[0], 7), lon=round(to_ll(*d["pos"])[1], 7)) for d in drops],
                   stuck=bool(snap["stuck_on"]), v_est=snap["v_est"],
+                  tide=dict(offset_cm=snap.get("tide_off"), status=snap.get("tide_status")),
                   slack_min=None if snap["slack"] is None or not np.isfinite(snap["slack"]) else snap["slack"],
                   decide_latency_s=round(snap.get("lat", 0.0) * veh.speed, 2))
         tmp = status_path + ".tmp"
@@ -401,7 +404,8 @@ def fly(veh, cfg, log_path):
                 write_status(snap, snap["t"] * 60)
                 if snap["event"] and snap["event"] != "처음 판정":
                     events.append((round(t, 1), snap["event"], f"판정 {snap['t']:.1f}분"))
-                    print(f"  [{clock_text(t)[11:]}] 판정: {snap['event']}  (위험도 {TIER_NAME[snap['tier']]}, 계산 {snap['lat'] * veh.speed:.1f}초)")
+                    print(f"  [{clock_text(t)[11:]}] 판정: {snap['event']}  (위험도 {TIER_NAME[snap['tier']]}, 계산 {snap['lat'] * veh.speed:.1f}초, "
+                          f"물 보정 {snap.get('tide_off')}cm · {snap.get('tide_status')})")
             # 새 계획
             if snap["id"] != plan_id:
                 plan_id = snap["id"]
@@ -444,7 +448,7 @@ def fly(veh, cfg, log_path):
                 frozen = est
                 drop = dict(stage="접근", t0=t, target=est, u=unit(est, (dn, de)))
                 enter(DROP, t)
-                print("  → 3분 안 움직임: 신고 + 그 자리에 구조품 투하")
+                print("  → 3분 안 움직임: 신고 + 그 자리에 구조품 투하" if snap["stuck_on"] else "  → 멈춤: 사람 발밑에 깜빡임 + 구조품 투하")
 
             # ── 단계 ──
             if phase == START and t >= rd.gd.REACT * 60:
@@ -723,7 +727,7 @@ def main():
     G = rm.build_grid(rm.AREA, 50.0, 0.5)
     if a.live:
         import gg_live_tide as lt
-        t0 = np.datetime64(time.strftime("%Y-%m-%dT%H:%M"))
+        t0 = np.datetime64(datetime.now(lt.KST).strftime("%Y-%m-%dT%H:%M"))        # 한국 시각 (컴퓨터 시간대와 무관)
         water = lt.LiveWater(G, lt.ApiSource(), t0, a.depth)
         water_src = "실시간 (공공데이터포털 영흥도 실측 + 저장한 조석 성분)"
     else:

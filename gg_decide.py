@@ -55,9 +55,13 @@ def dec_classes(dec):
     return cls
 
 
+MARGIN_LAG = 0      # 분: 실측이 이만큼 늦게 들어오면 그만큼 더 먼 앞을 보는 것 → 여유 표를 h + MARGIN_LAG 에서 읽음 (--lag-margin)
+
+
 def margin(h, night, table=None):
     """몇 분 앞(h)을 보는지에 따른 안전 여유(분, 기본 99%). 30분보다 짧으면 30분 값, 120분 넘으면 60~120분 기울기로 늘림"""
     tbl = (table or MARGIN)["밤" if night else "낮"]
+    h = np.asarray(h, float) + MARGIN_LAG
     xs = np.array([x for x, _ in tbl], float)
     ys = np.array([y for _, y in tbl], float)
     h = np.asarray(h, float)
@@ -98,8 +102,9 @@ def smooth5(x):
 def decide_at(G, T, O, P, t_now, a):
     n = HORIZON_H
     i_now = int(np.searchsorted(T, t_now))
-    o10 = O[max(0, i_now - 9):i_now + 1]
-    p10 = P[max(0, i_now - 9):i_now + 1]
+    lag = int(getattr(a, "lag", 0))                 # 실측이 늦게 들어오는 분 (공공데이터포털 약 10분)
+    o10 = O[max(0, i_now - lag - 9):i_now - lag + 1]
+    p10 = P[max(0, i_now - lag - 9):i_now - lag + 1]
     ok = np.isfinite(o10) & np.isfinite(p10)
     offset = float(np.mean(o10[ok] - p10[ok])) if ok.any() else 0.0
     Hf = (window(T, P, t_now, n) + offset) / 100.0                    # ① 예보 + 높이 보정 (m)
@@ -289,7 +294,8 @@ def batch(G, T, O, P, a, k):
             tct = rm.close_times(G, None, Ht, a.depth)
             ny, nx = G["sea"].shape
             for vname, (corr, marg) in variants.items():
-                o10, p10 = O[max(0, j - 9):j + 1], P[max(0, j - 9):j + 1]
+                lag = int(getattr(a, "lag", 0))
+                o10, p10 = O[max(0, j - lag - 9):j - lag + 1], P[max(0, j - lag - 9):j - lag + 1]
                 ok = np.isfinite(o10) & np.isfinite(p10)
                 off = float(np.mean(o10[ok] - p10[ok])) if (corr and ok.any()) else 0.0
                 Hf = (window(T, P, t_now, HORIZON_H) + off) / 100.0
@@ -317,7 +323,9 @@ def batch(G, T, O, P, a, k):
     for vname, t in tot.items():
         print(f"{vname:<20} {t['esc']:>12,}   {t['fail']:>12,}   {t['fail'] / max(t['esc'], 1) * 100:6.2f}%   "
               f"{t['esc'] / max(t['stand'], 1) * 100:5.1f}%")
-    out = os.path.join(rm.HERE, "tide", f"판정검증_{rm.AREA['key']}_밤간조{len(pick)}번.csv")
+    lag = int(getattr(a, "lag", 0))
+    out = os.path.join(rm.HERE, "tide", f"판정검증_{rm.AREA['key']}_밤간조{len(pick)}번" + (f"_실측{lag}분늦음" if lag else "")
+                       + ("_여유보정" if MARGIN_LAG else "") + ".csv")
     with open(out, "w", newline="", encoding="utf-8-sig") as f:
         w = csv.DictWriter(f, fieldnames=list(rows[0]))
         w.writeheader()
@@ -330,12 +338,16 @@ def main():
     ap.add_argument("--tide", required=True)
     ap.add_argument("--times", nargs="+", default=[])
     ap.add_argument("--batch", type=int, default=0, help="밤 큰 간조 N번 골라 네 방식 비교 검증")
+    ap.add_argument("--lag", type=int, default=0, help="실측이 이 분만큼 늦게 들어온다고 보고 보정 (공공데이터포털 약 10분)")
+    ap.add_argument("--lag-margin", action="store_true", help="안전 여유도 늦은 만큼 더 먼 앞의 값으로")
     ap.add_argument("--path-at")
     ap.add_argument("--res", type=float, default=50.0)
     ap.add_argument("--walk", type=float, default=0.5)
     ap.add_argument("--depth", type=float, default=0.30)
     ap.add_argument("--drop", type=float, default=0.5)
     a = ap.parse_args()
+    global MARGIN_LAG
+    MARGIN_LAG = a.lag if a.lag_margin else 0
     A = rm.AREA
     G = rm.build_grid(A, a.res, a.drop)
     T, O, P = load(a.tide)
