@@ -15,7 +15,11 @@
                              다음 칸이 닿기 전에 잠기면 그 자리에서 멈춤 → 구조품 투하 (그 자리가 잠기기 전)
         새 길이 지금 길과 같으면 사람을 멈춰 세우지 않음(반응 2분 없음)
         위험도는 올라가기만 함 (한 번 신고하면 취소는 관제가 함)
-        걸으라고 했는데 5분 넘게 안 움직이면(펄에 빠짐 등) 바로 신고 (2026-11-06 팀 결정)
+        걸으라고 했는데 3분 넘게 안 움직이면(펄에 빠짐 등) 바로 신고 + 그 자리에 구조품 (2026-11-06 팀 결정)
+  구조품 (2026-11-06 팀 결정):
+        드론 1대: 안내 드론이 싣고 다니다가 3분 안 움직인 자리 또는 갈 수 있는 끝(멈춤)에서 투하
+        드론 2대: 신고 때 두 번째 드론이 구조품을 싣고 출동(신고 + N분에 도착 [가정]), 사람 곁에서 기다리다가
+                  실제로 멈춘 자리(3분 안 움직임 또는 멈춤)에서 투하 → 물 30cm 전에 전달됐나를 N = 5·10·15·20분으로 셈
   검사(30초마다): 남은 길을 잰 속도로 걸을 때 (마지막 출발 여유) − (그 단계 여유) ≥ 0 이면 그대로
         갈 수 있는 데까지 가는 중이면: 예보로 물에 막히는 때가 정했을 때보다 5분 넘게 당겨지지 않으면 그대로
         안내 중인 길에서 OFF_M 넘게 벗어나면 그 자리에서 다시 계산
@@ -47,7 +51,8 @@ SPEED_MIN_T = 1.0   # 분: 이보다 짧게 쟀으면 앞서 잰 속도(처음�
 STILL_M = 3.0       # m: 30초에 이보다 덜 움직였으면 "서 있었음" (속도 계산에서 뺌)
 OFF_M = 30.0        # m: 안내 중인 길에서 이만큼 넘게 벗어나면 그 자리에서 다시 계산 [가정]
 V_FLOOR = 0.1       # m/s: 걸음 속도 아래 한계 (0으로 나누지 않게)
-STUCK_MIN = 5.0     # 분: 걸으라고 했는데 이만큼 넘게 안 움직이면 신고 (펄에 빠짐 등, 2026-11-06 팀 결정)
+STUCK_MIN = 3.0     # 분: 걸으라고 했는데 이만큼 넘게 안 움직이면 신고 + 그 자리에 구조품 (펄에 빠짐 등, 2026-11-06 팀 결정)
+DELIVER_MIN = (5, 10, 15, 20)   # 분: 두 번째 드론(구조품)이 신고 뒤 현장에 오기까지 [가정] — 몇 분 안에 와야 하는지 보려고 여러 값
 T_END = 330.0       # 분: 판정 뒤 이만큼까지만 따라감 (물 계산 길이 360분 안)
 LEVEL_TABLE = {"99%": gd.MARGIN, "95%": gd.MARGIN95}
 TIER_NAME = {0: "정상", 1: "주의", 2: "신고"}
@@ -125,6 +130,8 @@ class Redecider:
         self.alert = None          # 신고 시각
         self.drop = None           # (시각, 위치) 구조품 투하
         self.tx = []               # 구조대 전송 기록
+        self.stuck_on = False
+        self.stuck_events = []     # (시각, 위치) 걸으라 했는데 3분 넘게 안 움직임
         self.v_last = walk
 
     # ---- 좌표
@@ -323,11 +330,21 @@ class Redecider:
             self.send(t, pos)
             return P
         v = self.speed()
-        if self.tier < 2 and self.still_minutes() >= STUCK_MIN:          # 걸으라 했는데 3분 넘게 안 움직임 → 신고
-            self.tier = 2
-            self.caution = t if self.caution is None else self.caution
-            self.alert = t
-            self._log(t, pos, v, dict(s=P["s_last"], d=0), f"걸으라고 했는데 {STUCK_MIN:.0f}분 넘게 안 움직임 → 신고 [신고: 해경·위치 전송]")
+        still = self.still_minutes()
+        if still >= STUCK_MIN and not self.stuck_on:                     # 걸으라 했는데 3분 넘게 안 움직임 → 신고 + 구조품
+            self.stuck_on = True
+            self.stuck_events.append((t, np.array(pos, float)))
+            ev = f"걸으라고 했는데 {STUCK_MIN:.0f}분 넘게 안 움직임 → 그 자리에 구조품"
+            if self.tier < 2:
+                self.tier = 2
+                self.caution = t if self.caution is None else self.caution
+                self.alert = t
+                ev += " [신고: 해경·위치 전송]"
+            if self.drop is None:
+                self.drop = (t, np.array(pos, float))
+            self._log(t, pos, v, dict(s=P["s_last"], d=0), ev)
+        elif still < 1e-9:
+            self.stuck_on = False
         ok, info = self.check(t, pos, v)
         if info["s"] >= P["s"][-1] - 5.0 and info["d"] <= OFF_M and self.bar[int(P["cells"][-1])]:
             P["mode"] = "도착"
@@ -455,6 +472,7 @@ def simulate(G, water, tct, origin, start_ne, beh, redecide=True, walk=0.5):
         mm = [tf[k] - tt for (tt, _, _), k in zip(tr, ks) if eng.sea[k] and np.isfinite(tf[k])]
         minmarg = float(min(mm)) if mm else np.inf
     drop = eng.drop if redecide else None
+    deliver = deliveries(eng, tr, tf, arrived, caught) if redecide else {}
     drop_water = drop_land = None
     if drop is not None:
         kd = eng.cell(*drop[1])
@@ -464,7 +482,41 @@ def simulate(G, water, tct, origin, start_ne, beh, redecide=True, walk=0.5):
                 alert=eng.alert if redecide else None, caution=eng.caution if redecide else None,
                 drop=drop, drop_water=drop_water, drop_land=drop_land, tx=eng.tx if redecide else [],
                 walked=float(np.sum(np.hypot(*np.diff(tr[:, 1:], axis=0).T))), track=tr, minmarg=minmarg,
-                plans=eng.plans if redecide else [P0], log=eng.log, n_switch=len(eng.plans) - 1 if redecide else 0)
+                plans=eng.plans if redecide else [P0], log=eng.log, n_switch=len(eng.plans) - 1 if redecide else 0,
+                deliver=deliver)
+
+
+def deliveries(eng, tr, tf, arrived, caught):
+    """드론 2대: 신고 + N분에 두 번째 드론 도착 → 사람이 멈춰 있는 자리(3분 안 움직임 / 갈 수 있는 끝)에서 투하.
+    결과 {N: ("전달", 물까지 분) / ("물 먼저", 늦은 분) / ("필요 없음", None)}. 신고가 없으면 {}"""
+    if eng.alert is None:
+        return {}
+    needs = []                                              # (시작, 끝, 위치, 그 칸 물 30cm 시각)
+    for t0, p0 in eng.stuck_events:                        # 다시 걸어 3m 넘게 벗어나면 그 자리는 끝
+        later = tr[tr[:, 0] > t0]
+        moved = later[np.hypot(later[:, 1] - p0[0], later[:, 2] - p0[1]) >= STILL_M]
+        end = float(moved[0, 0]) if len(moved) else np.inf
+        k = eng.cell(*p0)
+        needs.append((t0, end, p0, float(tf[k]) if eng.sea[k] else np.inf))
+    if arrived is None and eng.plan["mode"] == "멈춤" and eng.plans:
+        P = eng.plan
+        k = eng.cell(*P["pts"][0])
+        needs.append((P["t_set"], np.inf, P["pts"][0], float(tf[k]) if eng.sea[k] else np.inf))
+    needs.sort(key=lambda x: x[0])
+    if not needs and arrived is None and caught is not None:
+        return {N: ("걷다가 막힘", None) for N in DELIVER_MIN}
+    out = {}
+    for N in DELIVER_MIN:
+        come = eng.alert + N
+        res = ("필요 없음", None)
+        for t0, end, p0, water in needs:
+            if end <= come:                                 # 드론이 오기 전에 다시 걸어 나감 → 다음 멈춤으로
+                continue
+            drop_t = max(t0, come)
+            res = ("전달", round(water - drop_t, 1)) if drop_t < water else ("물 먼저", round(drop_t - water, 1))
+            break
+        out[N] = res
+    return out
 
 
 def outcome(r):
@@ -493,7 +545,9 @@ def describe(r, t0):
     if r["alert"] is not None:
         s += f" · 신고 {_hm(t0, r['alert'])}" + (f" (물 차기 {r['caught'] - r['alert']:.0f}분 전)" if r["caught"] else "")
     if r["drop"] is not None:
-        s += f" · 구조품 {_hm(t0, r['drop'][0])} (그 자리 물 30cm까지 {r['drop_water']:.0f}분)"
+        s += f" · 구조품(1대) {_hm(t0, r['drop'][0])} (그 자리 물 30cm까지 {r['drop_water']:.0f}분)"
+    if r.get("deliver"):
+        s += " · 두 번째 드론 " + ", ".join(f"{N}분: {v[0]}" + ("" if v[1] is None else f" {v[1]:.0f}분") for N, v in r["deliver"].items())
     return s
 
 
@@ -714,7 +768,10 @@ def run_batch(a, G, T, O, P):
                                      out0=outcome(r0), water0=rnd(r0["caught"]), out1=outcome(r1), water1=rnd(r1["caught"]),
                                      caution1=rnd(r1["caution"]), alert1=rnd(r1["alert"]), switches1=r1["n_switch"],
                                      drop1=None if r1["drop"] is None else rnd(r1["drop"][0]), dropwater1=rnd(r1["drop_water"]),
-                                     dropland1=rnd(r1["drop_land"], 0), final1=r1["final"]))
+                                     dropland1=rnd(r1["drop_land"], 0), final1=r1["final"],
+                                     **{f"d{N}": "" if N not in r1["deliver"] else
+                                        (r1["deliver"][N][0] + ("" if r1["deliver"][N][1] is None else f" {r1['deliver'][N][1]}"))
+                                        for N in DELIVER_MIN}))
         print(f"   {n_i + 1}/{len(pick)} {str(T[i])[:16]} 끝, 지금까지 {len(rows)}건", flush=True)
     out = os.path.join(rm.HERE, "tide", f"재판정검증_{rm.AREA['key']}_밤간조{len(pick)}번.csv")
     with open(out, "w", newline="", encoding="utf-8-sig") as f:
@@ -758,10 +815,23 @@ def summarize(rows):
                  drop_land_med=float(np.median(dl)) if dl else np.nan,
                  lost=sum(r["out0"] == "해안 도착" and r["out1"] != "해안 도착" for r in rs),
                  earlier=sum(r["water1"] < r["water0"] - 1 for r in both), later=sum(r["water1"] > r["water0"] + 1 for r in both))
+        for N in DELIVER_MIN:
+            vals = [r[f"d{N}"] for r in rs if r[f"d{N}"]]
+            ok = [float(v.split()[1]) for v in vals if v.startswith("전달")]
+            d[f"need{N}"] = sum(not v.startswith("필요 없음") for v in vals)
+            d[f"ok{N}"] = len(ok)
+            d[f"late{N}"] = sum(v.startswith("물 먼저") for v in vals)
+            d[f"walk{N}"] = sum(v.startswith("걷다가") for v in vals)
+            d[f"okmed{N}"] = float(np.median(ok)) if ok else np.nan
         out.append(d)
         print(f"{name} | {d['n']} | {d['shore0']}·{d['caught0']} | {d['shore1']}·{d['stop1']}·{d['caught1']} | {d['caught1_noreport']} | "
               f"{d['caution']}·{d['report']} | {d['report_but_shore']} | {d['lead_med']:.0f}분 | {d['drops']}·{d['drop_late']} | "
               f"{d['drop_water_med']:.0f}분({d['drop_water_min']:.0f}) | {d['drop_land_med']:.0f}m | {d['lost']} | {d['earlier']}·{d['later']}")
+    print("\n두 번째 드론: 신고 + N분 도착 → 멈춘 자리에서 투하 (필요한 사람 중 물 전에 전달 · 물이 먼저 · 걷다가 막힘, 전달된 경우 물까지 중앙값)")
+    for d in out:
+        print(f"{d['behavior']:<16} " + " | ".join(
+            f"{N}분: {d[f'ok{N}']}/{d[f'need{N}']} 전달, 물 먼저 {d[f'late{N}']}, 걷다가 {d[f'walk{N}']}, 물까지 {d[f'okmed{N}']:.0f}분"
+            for N in DELIVER_MIN))
     return out
 
 
