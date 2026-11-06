@@ -345,6 +345,9 @@ class Redecider:
             self._log(t, pos, v, dict(s=P["s_last"], d=0), ev)
         elif still < 1e-9:
             self.stuck_on = False
+        if self.stuck_on:                       # 빠져 있는 동안은 길을 다시 짜지 않고 위치·물 예상 시각만 보냄
+            self.send(t, pos)
+            return P
         ok, info = self.check(t, pos, v)
         if info["s"] >= P["s"][-1] - 5.0 and info["d"] <= OFF_M and self.bar[int(P["cells"][-1])]:
             P["mode"] = "도착"
@@ -388,7 +391,7 @@ BEHAVIORS = {
     "정상 0.5m/s": dict(v=0.5),
     "느림 0.4m/s": dict(v=0.4),
     "아주 느림 0.3m/s": dict(v=0.3),
-    "15분 걷고 10분 멈춤": dict(v=0.5, stop=(17.0, 10.0)),
+    "15분 걷고 펄에 빠짐(못 나옴)": dict(v=0.5, stop=(17.0, np.inf)),     # 실제 사례: 빠지면 구조대가 끌어냄 (조위데이터 9장)
     "15분 걷고 5분 길 벗어남": dict(v=0.5, off=(17.0, 5.0)),
 }
 DT = 5 / 60.0       # 분: 사람 움직임 계산 간격
@@ -466,6 +469,7 @@ def simulate(G, water, tct, origin, start_ne, beh, redecide=True, walk=0.5):
                 caught = None
             break
     tr = np.array(track)
+    stuck_end = bool(stop and t >= stop[0] and arrived is None)
     minmarg = np.nan
     if arrived is not None:
         ks = [eng.cell(n, e) for _, n, e in tr]
@@ -478,7 +482,8 @@ def simulate(G, water, tct, origin, start_ne, beh, redecide=True, walk=0.5):
         kd = eng.cell(*drop[1])
         drop_water = float(tf[kd]) - drop[0] if eng.sea[kd] and np.isfinite(tf[kd]) else np.inf   # 투하 뒤 그 자리 물 30cm까지 (실제)
         drop_land = float(land_dist(G).ravel()[kd])
-    return dict(arrived=arrived, caught=caught, final=(eng.plan if redecide else P0)["mode"],
+    return dict(arrived=arrived, caught=caught, final=(eng.plan if redecide else P0)["mode"], stuck_end=stuck_end,
+                stuck_t=stop[0] if stuck_end else None,
                 alert=eng.alert if redecide else None, caution=eng.caution if redecide else None,
                 drop=drop, drop_water=drop_water, drop_land=drop_land, tx=eng.tx if redecide else [],
                 walked=float(np.sum(np.hypot(*np.diff(tr[:, 1:], axis=0).T))), track=tr, minmarg=minmarg,
@@ -522,6 +527,8 @@ def deliveries(eng, tr, tf, arrived, caught):
 def outcome(r):
     if r["arrived"] is not None:
         return "해안 도착"
+    if r.get("stuck_end"):
+        return "빠진 채 구조 대기"
     if r["final"] == "멈춤" and r["drop"] is not None:
         return "멈춤·구조 대기"
     return "걷다가 막힘"
@@ -538,6 +545,8 @@ def describe(r, t0):
     elif o == "멈춤·구조 대기":
         s = f"{_hm(t0, r['drop'][0])} 갈 수 있는 끝에서 멈춤 (육지까지 {r['drop_land']:.0f}m)" + \
             (f", 그 자리 물 30cm {_hm(t0, r['caught'])}" if r["caught"] else ", 계산 끝까지 안 잠김")
+    elif o == "빠진 채 구조 대기":
+        s = f"{_hm(t0, r['stuck_t'])} 펄에 빠짐" + (f", 그 자리 물 30cm {_hm(t0, r['caught'])}" if r["caught"] else ", 계산 끝까지 안 잠김")
     else:
         s = f"{_hm(t0, r['caught'])} 걷던 길에서 막힘 (물 30cm)" if r["caught"] else "끝까지 못 나옴"
     if r["caution"] is not None and r["caution"] != r["alert"]:
@@ -558,6 +567,9 @@ def short(r, t0):
     elif o == "멈춤·구조 대기":
         s = f"{_hm(t0, r['drop'][0])} 갈 수 있는 끝에서 멈춤 (육지까지 {r['drop_land']:.0f}m)\n→ 그 자리 물 30cm " + \
             (_hm(t0, r["caught"]) if r["caught"] else "계산 끝까지 없음")
+    elif o == "빠진 채 구조 대기":
+        s = f"{_hm(t0, r['stuck_t'])} 펄에 빠짐\n→ 그 자리 물 30cm " + (_hm(t0, r["caught"]) if r["caught"] else "계산 끝까지 없음") + \
+            ("\n(미리 알린 것 없음)" if r["alert"] is None else "")
     else:
         s = f"{_hm(t0, r['caught'])} 걷던 길에서 물에 막힘" + ("\n(미리 알린 것 없음)" if r["alert"] is None else "")
     if r["caution"] is not None and r["caution"] != r["alert"]:
@@ -667,7 +679,7 @@ def draw_case(out, G, route, t0, res, a):
             la, lo = to_ll(r["track"][:, 1], r["track"][:, 2])
             ax.plot(lo, la, color=col, lw=lw, zorder=z, solid_capstyle="round")
             o = outcome(r)
-            mk = {"해안 도착": ("*", 90), "멈춤·구조 대기": ("P", 120), "걷다가 막힘": ("X", 70)}[o]
+            mk = {"해안 도착": ("*", 90), "멈춤·구조 대기": ("P", 120), "걷다가 막힘": ("X", 70), "빠진 채 구조 대기": ("s", 70)}[o]
             ax.scatter([lo[-1]], [la[-1]], s=mk[1], marker=mk[0], color=col, edgecolor="white", linewidth=0.8, zorder=z + 5)
         sw = [row for row in r1["log"] if row["event"].startswith(("여유 모자람", "길에서", "다음 칸"))]
         if sw:
@@ -705,7 +717,8 @@ def draw_case(out, G, route, t0, res, a):
          Line2D([], [], color=SW, marker="D", ls="none", markersize=6, label="처음으로 판정을 바꾼 곳"),
          Line2D([], [], color=INK2, marker="*", ls="none", markersize=9, label="해안 도착"),
          Line2D([], [], color=INK2, marker="P", ls="none", markersize=9, label="멈춤 + 구조품 투하"),
-         Line2D([], [], color=INK2, marker="X", ls="none", markersize=7, label="걷다가 물에 막힘")]
+         Line2D([], [], color=INK2, marker="X", ls="none", markersize=7, label="걷다가 물에 막힘"),
+         Line2D([], [], color=INK2, marker="s", ls="none", markersize=7, label="펄에 빠진 채 구조 대기")]
     h += [Patch(fc=c, alpha=0.5, label="바탕(처음 판정 시각): " + l.split(":")[0]) for c, l in zip(gd.DEC_COLS, gd.DEC_LABELS)]
     fig.legend(handles=h, loc="lower left", bbox_to_anchor=(0.02, 0.005), ncol=5, frameon=False, fontsize=9.4)
     fig.text(0.98, 0.012, "물 30cm = 통행 불가로 봄. 사람 위치는 오차 없음, 반응 2분, 갯골 칸 0.5m 낮춤 [가정]. "
@@ -789,7 +802,7 @@ def run_batch(a, G, T, O, P):
 def summarize(rows):
     """사람마다: 재판정 없음/있음 결과, 위험도별 대응, 구조품 투하"""
     out = []
-    print("\n" + " | ".join(["사람", "건수", "없음: 해안·막힘", "있음: 해안·멈춤·막힘", "신고 없이 막힘", "주의·신고",
+    print("\n" + " | ".join(["사람", "건수", "없음: 해안·막힘·빠짐", "있음: 해안·멈춤·막힘·빠짐", "신고 없이 막힘", "주의·신고",
                               "신고했지만 해안", "신고~물 30cm 중앙값", "투하·물보다 늦은 투하", "투하 뒤 물까지 중앙값(최소)",
                               "멈춘 곳~육지 중앙값", "없음은 해안, 있음은 못 감", "물이 1분 넘게 더 일찍·늦게"]))
     fin = lambda x: x is not None and np.isfinite(x)        # noqa: E731
@@ -803,7 +816,8 @@ def summarize(rows):
         dw = [r["dropwater1"] for r in rs if r["drop1"] is not None and fin(r["dropwater1"])]
         dl = [r["dropland1"] for r in rs if r["drop1"] is not None and r["dropland1"] is not None]
         both = [r for r in rs if r["out0"] != "해안 도착" and r["out1"] != "해안 도착" and r["water0"] is not None and r["water1"] is not None]
-        d = dict(behavior=name, n=len(rs), shore0=c0("해안 도착"), caught0=c0("걷다가 막힘"),
+        d = dict(behavior=name, n=len(rs), shore0=c0("해안 도착"), caught0=c0("걷다가 막힘"), stuck0=c0("빠진 채 구조 대기"),
+                 stuck1=c1("빠진 채 구조 대기"),
                  shore1=c1("해안 도착"), stop1=c1("멈춤·구조 대기"), caught1=c1("걷다가 막힘"),
                  caught1_noreport=sum(r["out1"] == "걷다가 막힘" and r["alert1"] is None for r in rs),
                  caution=sum(r["caution1"] is not None for r in rs), report=sum(r["alert1"] is not None for r in rs),
@@ -824,7 +838,8 @@ def summarize(rows):
             d[f"walk{N}"] = sum(v.startswith("걷다가") for v in vals)
             d[f"okmed{N}"] = float(np.median(ok)) if ok else np.nan
         out.append(d)
-        print(f"{name} | {d['n']} | {d['shore0']}·{d['caught0']} | {d['shore1']}·{d['stop1']}·{d['caught1']} | {d['caught1_noreport']} | "
+        print(f"{name} | {d['n']} | {d['shore0']}·{d['caught0']}·{d['stuck0']} | {d['shore1']}·{d['stop1']}·{d['caught1']}·{d['stuck1']} | "
+              f"{d['caught1_noreport']} | "
               f"{d['caution']}·{d['report']} | {d['report_but_shore']} | {d['lead_med']:.0f}분 | {d['drops']}·{d['drop_late']} | "
               f"{d['drop_water_med']:.0f}분({d['drop_water_min']:.0f}) | {d['drop_land_med']:.0f}m | {d['lost']} | {d['earlier']}·{d['later']}")
     print("\n두 번째 드론: 신고 + N분 도착 → 멈춘 자리에서 투하 (필요한 사람 중 물 전에 전달 · 물이 먼저 · 걷다가 막힘, 전달된 경우 물까지 중앙값)")
